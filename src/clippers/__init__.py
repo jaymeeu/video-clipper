@@ -1,2 +1,1 @@
-def main() -> None:
-    print("Hello from clippers!")
+"""ClapMi auto-highlight clipper."""
