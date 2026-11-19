@@ -10,6 +10,7 @@ from typing import Annotated, NoReturn
 
 import typer
 
+from clippers.framing import Framing
 from clippers.timecode import parse_timestamp
 from clippers.video import FFmpegError, cut_clip
 
@@ -44,6 +45,16 @@ def cut(
     output: Annotated[Path, typer.Option("--output", "-o", help="Output file.")] = Path(
         "output/clip.mp4"
     ),
+    framing: Annotated[
+        Framing,
+        typer.Option(
+            "--framing",
+            "-f",
+            case_sensitive=False,
+            help="blur: whole frame on a blurred 9:16 background. "
+            "crop: fill 9:16, cut the sides. original: no reframing.",
+        ),
+    ] = Framing.BLUR,
 ) -> None:
     """Cut a single clip from VIDEO at a given timestamp."""
     try:
@@ -52,7 +63,7 @@ def cut(
         raise typer.BadParameter(str(e), param_hint="'--start'") from e
 
     try:
-        clip = cut_clip(video, output, start=start_seconds, duration=duration)
+        clip = cut_clip(video, output, start=start_seconds, duration=duration, framing=framing)
     except FFmpegError as e:
         logger.debug("ffmpeg stderr:\n%s", e.stderr)
         _fail(str(e))
