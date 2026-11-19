@@ -17,3 +17,6 @@ wheels/
 *.wav
 *.m4a
 output/
+
+# yt-dlp download cache
+downloads/

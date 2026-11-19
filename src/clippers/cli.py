@@ -11,6 +11,7 @@ from typing import Annotated, NoReturn
 import typer
 
 from clippers.framing import Framing
+from clippers.ingest import DEFAULT_DOWNLOAD_DIR, DownloadError, download, is_url
 from clippers.timecode import parse_timestamp
 from clippers.video import FFmpegError, cut_clip
 
@@ -37,9 +38,25 @@ def main(
     )
 
 
+@app.command("download")
+def download_command(
+    url: Annotated[str, typer.Argument(help="Video URL: a direct file link or a platform page.")],
+    dest_dir: Annotated[
+        Path, typer.Option("--dir", help="Where to save downloads.")
+    ] = DEFAULT_DOWNLOAD_DIR,
+) -> None:
+    """Download a video from URL without cutting it (to cut it several times later)."""
+    try:
+        path = download(url, dest_dir)
+    except (DownloadError, ValueError) as e:
+        _fail(str(e))
+
+    typer.echo(path)
+
+
 @app.command()
 def cut(
-    video: Annotated[Path, typer.Argument(help="Source video file.")],
+    video: Annotated[str, typer.Argument(help="Source video: a local file or an http(s) URL.")],
     start: Annotated[str, typer.Option("--start", "-s", help="Start time: SS, MM:SS or HH:MM:SS.")],
     duration: Annotated[float, typer.Option("--duration", "-d", help="Clip length (s).")] = 30.0,
     output: Annotated[Path, typer.Option("--output", "-o", help="Output file.")] = Path(
@@ -56,18 +73,19 @@ def cut(
         ),
     ] = Framing.BLUR,
 ) -> None:
-    """Cut a single clip from VIDEO at a given timestamp."""
+    """Cut a single clip from VIDEO (file or URL) at a given timestamp."""
     try:
         start_seconds = parse_timestamp(start)
     except ValueError as e:
         raise typer.BadParameter(str(e), param_hint="'--start'") from e
 
     try:
-        clip = cut_clip(video, output, start=start_seconds, duration=duration, framing=framing)
+        source = download(video) if is_url(video) else Path(video)
+        clip = cut_clip(source, output, start=start_seconds, duration=duration, framing=framing)
     except FFmpegError as e:
         logger.debug("ffmpeg stderr:\n%s", e.stderr)
         _fail(str(e))
-    except (FileNotFoundError, ValueError) as e:
+    except (DownloadError, FileNotFoundError, ValueError) as e:
         _fail(str(e))
 
     typer.echo(clip)  # stdout: just the path, so scripts can capture it
