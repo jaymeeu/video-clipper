@@ -1,5 +1,4 @@
 import logging
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -69,18 +68,6 @@ def test_no_args_shows_help() -> None:
     assert "cut" in result.output
 
 
-@pytest.fixture
-def restore_logging() -> Iterator[None]:
-    """configure_logging changes global state; put it back so other tests aren't affected."""
-    root, ours = logging.getLogger(), logging.getLogger("clippers")
-    saved = (root.level, list(root.handlers), ours.level)
-    yield
-    root.setLevel(saved[0])
-    root.handlers[:] = saved[1]
-    ours.setLevel(saved[2])
-
-
-@pytest.mark.usefixtures("restore_logging")
 def test_default_logging_shows_our_info_but_only_library_warnings() -> None:
     configure_logging(verbose=False)
 
@@ -90,7 +77,6 @@ def test_default_logging_shows_our_info_but_only_library_warnings() -> None:
     assert logging.getLogger("faster_whisper").isEnabledFor(logging.WARNING)
 
 
-@pytest.mark.usefixtures("restore_logging")
 def test_verbose_logging_shows_everything() -> None:
     configure_logging(verbose=True)
 

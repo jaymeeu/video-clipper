@@ -1,8 +1,11 @@
 import numpy as np
 import pytest
 
+from clippers.ai import AIMoment
 from clippers.signals import (
     Signal,
+    ai_signal,
+    best_ai_moment,
     combine,
     describe_window,
     loudness_signal,
@@ -99,3 +102,28 @@ def test_describe_window_lists_contributors_strongest_first() -> None:
     silent = Signal("silent", flat(60, 0.0), 1.0, lambda s, d: "never shown")
 
     assert describe_window([weak, silent, strong], 0, 30) == "strong evidence; weak evidence"
+
+
+class TestAISignal:
+    def test_strength_follows_ai_scores(self) -> None:
+        moments = [
+            AIMoment(start=10, end=20, title="Roast", reason="funny", score=7),
+            AIMoment(start=15, end=30, title="Weaker", reason="ok", score=3),
+        ]
+
+        signal = ai_signal(moments, 60)
+
+        assert signal.strength[12] == pytest.approx(1.0)  # 7 / reference 7
+        assert signal.strength[17] == pytest.approx(1.0)  # overlap keeps the stronger one
+        assert signal.strength[25] == pytest.approx(3 / 7)
+        assert signal.strength[40] == 0
+
+    def test_best_ai_moment_and_description(self) -> None:
+        moments = [
+            AIMoment(start=0, end=10, title="Small", reason="meh", score=9),
+            AIMoment(start=30, end=60, title="Big one", reason="the payoff", score=6),
+        ]
+
+        assert best_ai_moment(moments, 25, 30) == moments[1]
+        assert best_ai_moment(moments, 100, 30) is None
+        assert ai_signal(moments, 90).describe(25, 30) == 'AI 6/10 "Big one": the payoff'

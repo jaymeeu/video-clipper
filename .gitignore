@@ -23,3 +23,6 @@ downloads/
 
 # macOS Finder metadata
 .DS_Store
+
+# Local secrets (API keys). Never commit; see .env.example
+.env

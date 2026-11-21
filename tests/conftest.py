@@ -1,7 +1,9 @@
 """Shared pytest fixtures. pytest auto-discovers this file and injects fixtures by name."""
 
+import logging
 import shutil
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -41,3 +43,37 @@ def make_video(tmp_path_factory: pytest.TempPathFactory) -> MakeVideo:
 def sample_video(make_video: MakeVideo) -> Path:
     """The default 10s 320x240 test video."""
     return make_video()
+
+
+@pytest.fixture(autouse=True)
+def restore_logging() -> Iterator[None]:
+    """Put logging back as it was after every test.
+
+    The CLI's callback reconfigures logging globally; without this, one test's settings
+    leak into the next and tests pass or fail depending on the order they run in.
+    """
+    root, ours = logging.getLogger(), logging.getLogger("clippers")
+    saved = (root.level, list(root.handlers), ours.level)
+    yield
+    root.setLevel(saved[0])
+    root.handlers[:] = saved[1]
+    ours.setLevel(saved[2])
+
+
+@pytest.fixture(autouse=True)
+def isolate_from_real_setup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Make it impossible for a test to use the developer's real credentials or files.
+
+    - our settings are removed from the environment (API key, AI model);
+    - the cwd is a fresh temp folder, so the CLI's .env search never finds the project's
+      real .env (and no test can write output/ or downloads/ into the repo);
+    - the cache points at a temp folder, never ~/.cache/clippers;
+    - OpenAI is pointed at a port that refuses connections, so even a test that slips
+      through makes no paid request: it fails fast instead.
+    Tests that need any of these set them explicitly (monkeypatch.setenv/chdir).
+    """
+    for key in ("OPENAI_API_KEY", "CLIPPERS_AI_MODEL"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("CLIPPERS_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:9/no-network-in-tests")
+    monkeypatch.chdir(tmp_path)

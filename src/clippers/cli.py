@@ -9,7 +9,14 @@ from pathlib import Path
 from typing import Annotated, NoReturn
 
 import typer
+from dotenv import find_dotenv, load_dotenv
 
+from clippers.ai import (
+    AIMoment,
+    AIScoringError,
+    OpenAISuggester,
+    suggest_moments,
+)
 from clippers.batch import run_batch
 from clippers.detect import detect_moments
 from clippers.framing import Framing
@@ -49,6 +56,23 @@ def main(
 ) -> None:
     """Global options, applied before any subcommand runs."""
     configure_logging(verbose=verbose)
+    load_env_file()
+
+
+def load_env_file() -> Path | None:
+    """Load settings like OPENAI_API_KEY from a .env file, if there is one.
+
+    Searches the current folder, then its parents (usecwd=True; the default would search
+    from this file's folder inside the installed package). Variables already set in the
+    environment win over the file (override=False), so a real `export` always takes
+    precedence. Returns the file used, for logging and tests.
+    """
+    found = find_dotenv(usecwd=True)
+    if not found:
+        return None
+    load_dotenv(found, override=False)
+    logger.debug("loaded settings from %s", found)  # never log the values themselves
+    return Path(found)
 
 
 def configure_logging(*, verbose: bool) -> None:
@@ -188,18 +212,48 @@ def detect(
     ] = True,
     model: ModelOption = DEFAULT_MODEL,
     language: LanguageOption = None,
+    use_ai: Annotated[
+        bool,
+        typer.Option(
+            "--ai/--no-ai",
+            help="Also ask an AI model which moments are clip-worthy. Sends the transcript "
+            "to OpenAI and costs a few cents per video (cached afterwards). "
+            "Needs OPENAI_API_KEY.",
+        ),
+    ] = False,
+    ai_model: Annotated[
+        str | None,
+        typer.Option(
+            "--ai-model", help="OpenAI model for --ai. Default: $CLIPPERS_AI_MODEL or gpt-5-mini."
+        ),
+    ] = None,
 ) -> None:
     """Find the moments in VIDEO that stand out most and write them to a moments file."""
+    if use_ai and not use_transcript:
+        raise typer.BadParameter(
+            "--ai reads the transcript, so it can't be used with --no-transcript"
+        )
     try:
         source = resolve_source(video)
         transcript = (
             transcribe_cached(source, model=model, language=language) if use_transcript else None
         )
-        plan = detect_moments(video, source, count=count, duration=duration, transcript=transcript)
+        ai_moments: list[AIMoment] = []
+        if use_ai and transcript is not None:
+            suggester = OpenAISuggester(ai_model)
+            ai_moments = suggest_moments(transcript, suggester, max_moments=max(10, count * 2))
+        plan = detect_moments(
+            video,
+            source,
+            count=count,
+            duration=duration,
+            transcript=transcript,
+            ai_moments=ai_moments,
+        )
     except FFmpegError as e:
         logger.debug("ffmpeg stderr:\n%s", e.stderr)
         _fail(str(e))
-    except (DownloadError, FileNotFoundError, ValueError) as e:
+    except (AIScoringError, DownloadError, FileNotFoundError, ValueError) as e:
         _fail(str(e))
 
     path = save_moments(plan, output or Path("output") / f"{source.stem}.moments.json")

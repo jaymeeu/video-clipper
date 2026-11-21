@@ -1,14 +1,18 @@
 """Turn a video into a moments file by measuring it. Glue between I/O and the scoring."""
 
 import logging
+from collections.abc import Sequence
 from pathlib import Path
 
+from clippers.ai import AIMoment
 from clippers.audio import loudness_per_second
 from clippers.highlights import find_highlights
 from clippers.ingest import is_url
 from clippers.moments import Moment, MomentsFile
 from clippers.signals import (
     Signal,
+    ai_signal,
+    best_ai_moment,
     combine,
     describe_window,
     loudness_signal,
@@ -31,11 +35,13 @@ def detect_moments(
     count: int,
     duration: int,
     transcript: Transcript | None = None,
+    ai_moments: Sequence[AIMoment] = (),
 ) -> MomentsFile:
     """Pick up to `count` highlight moments from `video` and describe them as a MomentsFile.
 
     Loudness is always used. With a `transcript` (times relative to the start of the
-    video), speech-rate and reaction signals are added.
+    video), speech-rate and reaction signals are added; with `ai_moments`, an AI signal,
+    and picks take their title from the AI suggestion they overlap most.
 
     `source` is what the user typed (URL or path); it's stored in the file so `batch`
     can find the video again. Local paths are stored absolute, because the moments
@@ -49,6 +55,8 @@ def detect_moments(
             speech_signal(transcript.words, seconds),
             reaction_signal(transcript.words, seconds),
         ]
+    if ai_moments:
+        signals.append(ai_signal(ai_moments, seconds))
     logger.info("scoring with signals: %s", ", ".join(s.name for s in signals))
 
     picks = find_highlights(combine(signals), count=count, duration=duration)
@@ -61,6 +69,7 @@ def detect_moments(
         Moment(
             start=h.start,
             duration=h.duration,
+            title=ai.title if (ai := best_ai_moment(ai_moments, h.start, h.duration)) else None,
             score=h.score,
             reason=describe_window(signals, h.start, h.duration),
         )

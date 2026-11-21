@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -50,6 +51,8 @@ def test_cached_model_loads_without_network(fake_whisper: type[FakeWhisperModel]
 def test_missing_model_is_downloaded_once(
     fake_whisper: type[FakeWhisperModel], caplog: pytest.LogCaptureFixture
 ) -> None:
+    caplog.set_level(logging.INFO, logger="clippers")  # INFO is off by default
+
     _load_model("medium")
 
     assert [c.get("local_files_only") for c in fake_whisper.calls] == [True, None]

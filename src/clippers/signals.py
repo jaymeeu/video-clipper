@@ -7,12 +7,14 @@ that signal. After that, 1.0 means "strong" for every signal and they can be add
 The references and weights are first guesses. Tune them against real streams.
 """
 
+import math
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import numpy as np
 
+from clippers.ai import AIMoment
 from clippers.highlights import FloatArray, above_baseline
 from clippers.transcribe import Word
 
@@ -142,3 +144,33 @@ def reaction_signal(words: Sequence[Word], seconds: int) -> Signal:
         return f"{len(labels)} reactions ({shown})"
 
     return Signal("reactions", counts / REACTION_REFERENCE, 1.0, describe)
+
+
+# --- AI suggestions ---------------------------------------------------------------------
+
+AI_REFERENCE_SCORE = 7  # an AI score of 7/10 counts as "clearly strong"
+
+
+def best_ai_moment(moments: Sequence[AIMoment], start: int, duration: int) -> AIMoment | None:
+    """The AI moment that best covers a window: overlap with it, weighted by score."""
+
+    def fit(m: AIMoment) -> float:
+        overlap = min(m.end, start + duration) - max(m.start, start)
+        return max(0.0, overlap) * m.score
+
+    best = max(moments, key=fit, default=None)
+    return best if best is not None and fit(best) > 0 else None
+
+
+def ai_signal(moments: Sequence[AIMoment], seconds: int) -> Signal:
+    strength = np.zeros(seconds)
+    for m in moments:
+        span = slice(int(m.start), min(seconds, math.ceil(m.end)))
+        # Overlapping suggestions don't stack: each second keeps its strongest one.
+        strength[span] = np.maximum(strength[span], m.score / AI_REFERENCE_SCORE)
+
+    def describe(start: int, duration: int) -> str:
+        m = best_ai_moment(moments, start, duration)
+        return f'AI {m.score}/10 "{m.title}": {m.reason}' if m else "AI: no suggestion here"
+
+    return Signal("ai", strength, 1.5, describe)

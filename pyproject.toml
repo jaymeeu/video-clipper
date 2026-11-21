@@ -14,7 +14,9 @@ dependencies = [
     "faster-whisper>=1.2.1",
     "huggingface-hub>=2.4.0",
     "numpy>=2.5.5",
+    "openai>=3.57.0",
     "pydantic>=2.14.3",
+    "python-dotenv>=1.2.4",
     "typer>=0.29.2",
     "yt-dlp[default]>=2026.10.26",
 ]

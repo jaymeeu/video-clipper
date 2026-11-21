@@ -5,15 +5,15 @@ faster-whisper's type hints are incomplete, so this module is the boundary: the
 our fully typed Transcript/Word models.
 """
 
-import hashlib
 import logging
-import os
 import time
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field
+
+from clippers import cache
 
 if TYPE_CHECKING:  # only for type checkers: importing faster_whisper is slow
     from faster_whisper import WhisperModel  # pyright: ignore[reportMissingTypeStubs]
@@ -108,14 +108,6 @@ def transcribe(
     )
 
 
-def cache_dir() -> Path:
-    """Where clippers keeps cached results. Override with the CLIPPERS_CACHE_DIR env var.
-
-    Read at call time, not import time, so tests (and users) can change it per run.
-    """
-    return Path(os.environ.get("CLIPPERS_CACHE_DIR") or Path.home() / ".cache" / "clippers")
-
-
 def transcribe_cached(
     video: Path, *, model: str = DEFAULT_MODEL, language: str | None = None
 ) -> Transcript:
@@ -126,25 +118,16 @@ def transcribe_cached(
     every run; if the file is replaced, its size or mtime changes and the cache misses.
     """
     stat = video.stat()  # raises FileNotFoundError for a missing video
-    identity = f"{video.resolve()}|{stat.st_size}|{stat.st_mtime_ns}|{model}|{language}"
-    key = hashlib.sha256(identity.encode()).hexdigest()[:24]
-    path = cache_dir() / "transcripts" / f"{key}.json"
+    path = cache.cache_path(
+        "transcripts",
+        str(video.resolve()), str(stat.st_size), str(stat.st_mtime_ns), model, str(language),
+    )  # fmt: skip
 
-    if path.is_file():
-        try:
-            transcript = Transcript.model_validate_json(path.read_bytes())
-        except ValidationError:
-            logger.warning("ignoring unreadable transcript cache %s", path)
-        else:
-            logger.info("using cached transcript (%d words)", len(transcript.words))
-            return transcript
+    if (cached := cache.load(path, Transcript)) is not None:
+        logger.info("using cached transcript (%d words)", len(cached.words))
+        return cached
 
     logger.info("transcribing the whole video; cached afterwards, so this happens once")
     transcript = transcribe(video, model=model, language=language)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Write to a temp file, then rename: a crash mid-write can't leave a half-written
-    # cache file that a later run would trust. (rename is atomic on the same disk.)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(transcript.model_dump_json(), encoding="utf-8")
-    tmp.replace(path)
+    cache.save(path, transcript)
     return transcript

@@ -5,6 +5,7 @@ import pytest
 from typer.testing import CliRunner
 
 from clippers import cli
+from clippers.ai import AIMoment
 from clippers.audio import loudness_per_second
 from clippers.cli import app
 from clippers.detect import NoHighlightsError, detect_moments
@@ -120,3 +121,35 @@ def test_cli_detect_uses_cached_transcript(
     assert result.exit_code == 0, result.output
     assert calls == [bursty_video]
     assert any("reactions" in (m.reason or "") for m in load_moments(out).moments)
+
+
+def test_ai_moments_add_a_signal_and_titles(bursty_video: Path) -> None:
+    ai = [AIMoment(start=95, end=115, title="Wahala don start", reason="big argument", score=9)]
+
+    plan = detect_moments(
+        str(bursty_video), bursty_video, count=5, duration=20,
+        transcript=_reactions_at(150), ai_moments=ai,
+    )  # fmt: skip
+
+    titled = [m for m in plan.moments if m.title == "Wahala don start"]
+    assert titled, [(m.start, m.title) for m in plan.moments]
+    assert titled[0].reason is not None and 'AI 9/10 "Wahala don start"' in titled[0].reason
+
+
+def test_cli_ai_requires_transcript(bursty_video: Path) -> None:
+    result = CliRunner().invoke(app, ["detect", "--ai", "--no-transcript", str(bursty_video)])
+
+    assert result.exit_code == 2
+    assert "--ai reads the transcript" in result.output
+
+
+def test_cli_ai_without_key_fails_cleanly(
+    bursty_video: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(cli, "transcribe_cached", lambda video, **_: _reactions_at(100))  # pyright: ignore[reportUnknownLambdaType]
+
+    result = CliRunner().invoke(app, ["detect", "--ai", str(bursty_video), "-d", "20"])
+
+    assert result.exit_code == 1
+    assert "OPENAI_API_KEY is not set" in result.stderr
