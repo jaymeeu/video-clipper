@@ -1,10 +1,17 @@
 from collections.abc import Iterator
+from pathlib import Path
 
 import faster_whisper
 import pytest
 from huggingface_hub.errors import LocalEntryNotFoundError
 
-from clippers.transcribe import _load_model  # pyright: ignore[reportPrivateUsage]
+from clippers import transcribe as transcribe_module
+from clippers.transcribe import (
+    Transcript,
+    Word,
+    _load_model,  # pyright: ignore[reportPrivateUsage]
+    transcribe_cached,
+)
 
 
 class FakeWhisperModel:
@@ -57,3 +64,68 @@ def test_model_is_loaded_once_per_process(fake_whisper: type[FakeWhisperModel]) 
 
     assert first is second
     assert len(fake_whisper.calls) == 1
+
+
+class TestTranscribeCached:
+    @pytest.fixture
+    def counting_transcribe(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> list[tuple[Path, str]]:
+        """Fake transcriber recording its calls; cache in a temp dir, not ~/.cache."""
+        monkeypatch.setenv("CLIPPERS_CACHE_DIR", str(tmp_path / "cache"))
+        calls: list[tuple[Path, str]] = []
+
+        def fake(audio: Path, *, model: str = "small", language: str | None = None) -> Transcript:
+            calls.append((audio, model))
+            return Transcript(
+                language="en",
+                language_probability=0.9,
+                words=[Word(text="hello", start=0, end=0.5, probability=0.9)],
+            )
+
+        # transcribe_cached looks up `transcribe` in its own module at call time.
+        monkeypatch.setattr(transcribe_module, "transcribe", fake)
+        return calls
+
+    def test_second_call_uses_cache(
+        self, counting_transcribe: list[tuple[Path, str]], tmp_path: Path
+    ) -> None:
+        video = tmp_path / "v.mp4"
+        video.write_bytes(b"video")
+
+        first = transcribe_cached(video)
+        second = transcribe_cached(video)
+
+        assert first == second
+        assert len(counting_transcribe) == 1
+
+    def test_changed_file_or_model_misses_cache(
+        self, counting_transcribe: list[tuple[Path, str]], tmp_path: Path
+    ) -> None:
+        video = tmp_path / "v.mp4"
+        video.write_bytes(b"video")
+        transcribe_cached(video)
+
+        transcribe_cached(video, model="tiny")  # different model
+        video.write_bytes(b"a longer, different video")  # different size and mtime
+        transcribe_cached(video)
+
+        assert len(counting_transcribe) == 3
+
+    def test_corrupt_cache_file_is_ignored(
+        self, counting_transcribe: list[tuple[Path, str]], tmp_path: Path
+    ) -> None:
+        video = tmp_path / "v.mp4"
+        video.write_bytes(b"video")
+        transcribe_cached(video)
+        for cached in (tmp_path / "cache" / "transcripts").glob("*.json"):
+            cached.write_text("{ not json")
+
+        transcript = transcribe_cached(video)
+
+        assert transcript.words[0].text == "hello"
+        assert len(counting_transcribe) == 2
+
+    def test_missing_video_raises(self, counting_transcribe: list[tuple[Path, str]]) -> None:
+        with pytest.raises(FileNotFoundError):
+            transcribe_cached(Path("/nonexistent/video.mp4"))

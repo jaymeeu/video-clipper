@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from clippers.highlights import excitement, find_loud_moments, pick_windows, window_scores
+from clippers.highlights import above_baseline, find_highlights, pick_windows, window_scores
 from clippers.timecode import format_timestamp
 
 
@@ -13,12 +13,12 @@ def stream(seconds: int, base_db: float = -30.0, **bursts: tuple[int, int, float
     return loudness
 
 
-class TestExcitement:
-    def test_flat_audio_has_no_excitement(self) -> None:
-        assert np.allclose(excitement(stream(300)), 0)
+class TestAboveBaseline:
+    def test_flat_signal_is_never_above_baseline(self) -> None:
+        assert np.allclose(above_baseline(stream(300)), 0)
 
     def test_burst_stands_out_by_its_boost(self) -> None:
-        result = excitement(stream(300, shout=(100, 105, 20)))
+        result = above_baseline(stream(300, shout=(100, 105, 20)))
 
         assert result[102] == pytest.approx(20)
         assert result[50] == pytest.approx(0)
@@ -28,7 +28,7 @@ class TestExcitement:
         # while the music itself (once it's "normal" for that stretch) does not.
         loudness = stream(600, music=(300, 600, 15), shout=(450, 453, 5))
 
-        result = excitement(loudness)
+        result = above_baseline(loudness)
 
         assert result[451] == pytest.approx(5)
         assert result[550] == pytest.approx(0)
@@ -41,15 +41,15 @@ class TestExcitement:
         loudness = -30 + rng.normal(0, 3, 300)
         loudness[0] = -90
 
-        result = excitement(loudness)
+        result = above_baseline(loudness)
 
         assert result[1:30].mean() <= result[120:150].mean() * 1.25
 
     def test_quieter_than_usual_is_not_negative(self) -> None:
-        assert excitement(stream(300, lull=(100, 120, -20))).min() == 0
+        assert above_baseline(stream(300, lull=(100, 120, -20))).min() == 0
 
     def test_empty(self) -> None:
-        assert excitement(np.array([])).size == 0
+        assert above_baseline(np.array([])).size == 0
 
 
 class TestWindowScores:
@@ -84,13 +84,14 @@ class TestPickWindows:
         assert len(pick_windows(scores, duration=30, count=3)) == 3
 
     def test_ignores_scores_below_minimum(self) -> None:
-        assert pick_windows(np.full(100, 0.5), duration=30, count=5) == []
+        assert pick_windows(np.full(100, 0.05), duration=30, count=5) == []
 
 
-def test_find_loud_moments_end_to_end_on_arrays() -> None:
+def test_find_highlights_end_to_end_on_arrays() -> None:
     loudness = stream(900, big=(600, 610, 25), small=(200, 205, 12))
+    strength = above_baseline(loudness) / 10  # loudness in strength units (10 dB = 1.0)
 
-    moments = find_loud_moments(loudness, count=5, duration=30)
+    moments = find_highlights(strength, count=5, duration=30)
 
     assert len(moments) == 2  # nothing else stands out: fewer picks, no filler
     assert moments[0].score > moments[1].score

@@ -1,12 +1,21 @@
-"""Turn a video into a moments file by measuring it. Glue between I/O and highlights.py."""
+"""Turn a video into a moments file by measuring it. Glue between I/O and the scoring."""
 
 import logging
 from pathlib import Path
 
 from clippers.audio import loudness_per_second
-from clippers.highlights import find_loud_moments
+from clippers.highlights import find_highlights
 from clippers.ingest import is_url
 from clippers.moments import Moment, MomentsFile
+from clippers.signals import (
+    Signal,
+    combine,
+    describe_window,
+    loudness_signal,
+    reaction_signal,
+    speech_signal,
+)
+from clippers.transcribe import Transcript
 
 logger = logging.getLogger(__name__)
 
@@ -15,18 +24,37 @@ class NoHighlightsError(ValueError):
     """Nothing in the video stood out enough to pick."""
 
 
-def detect_moments(source: str, video: Path, *, count: int, duration: int) -> MomentsFile:
+def detect_moments(
+    source: str,
+    video: Path,
+    *,
+    count: int,
+    duration: int,
+    transcript: Transcript | None = None,
+) -> MomentsFile:
     """Pick up to `count` highlight moments from `video` and describe them as a MomentsFile.
+
+    Loudness is always used. With a `transcript` (times relative to the start of the
+    video), speech-rate and reaction signals are added.
 
     `source` is what the user typed (URL or path); it's stored in the file so `batch`
     can find the video again. Local paths are stored absolute, because the moments
     file may be saved somewhere else and relative paths resolve from its folder.
     """
     loudness = loudness_per_second(video)
-    picks = find_loud_moments(loudness, count=count, duration=duration)
+    seconds = loudness.size
+    signals: list[Signal] = [loudness_signal(loudness)]
+    if transcript is not None:
+        signals += [
+            speech_signal(transcript.words, seconds),
+            reaction_signal(transcript.words, seconds),
+        ]
+    logger.info("scoring with signals: %s", ", ".join(s.name for s in signals))
+
+    picks = find_highlights(combine(signals), count=count, duration=duration)
     if not picks:
         raise NoHighlightsError(
-            "no moment stood out from the rest of the audio (is the video silent, or evenly loud?)"
+            "no moment stood out from the rest of the video (is it silent, or evenly loud?)"
         )
 
     moments = [
@@ -34,7 +62,7 @@ def detect_moments(source: str, video: Path, *, count: int, duration: int) -> Mo
             start=h.start,
             duration=h.duration,
             score=h.score,
-            reason=f"audio averages {h.score:.1f} dB louder than the surrounding two minutes",
+            reason=describe_window(signals, h.start, h.duration),
         )
         for h in picks
     ]

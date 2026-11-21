@@ -1,7 +1,8 @@
-"""Find highlight moments from per-second signals.
+"""Find highlight moments in a per-second strength signal.
 
 Pure numpy functions: they take arrays (one value per second of video) and return
-picks. No I/O, so they're fast to test with hand-made arrays.
+picks. No I/O, so they're fast to test with hand-made arrays. What the strength is
+made of (loudness, speech, reactions...) is decided in signals.py.
 """
 
 from dataclasses import dataclass
@@ -12,31 +13,36 @@ from numpy.typing import NDArray
 
 FloatArray = NDArray[np.float64]
 
+# Strength units: each signal is scaled so 1.0 means "clearly strong" (see signals.py).
+# 0.1 is a tenth of that, e.g. ~1 dB of loudness alone: about the smallest change people
+# notice. Windows below it aren't highlights.
+MIN_SCORE = 0.1
+
 
 @dataclass(frozen=True, slots=True)
 class Highlight:
     start: int  # seconds
     duration: int  # seconds
-    score: float  # centre-weighted average dB above the local baseline across the window
+    score: float  # centre-weighted mean strength across the window
 
 
-def excitement(loudness: FloatArray, *, baseline_seconds: int = 120) -> FloatArray:
-    """How much louder each second is than its surroundings, in dB (never negative).
+def above_baseline(signal: FloatArray, *, baseline_seconds: int = 120) -> FloatArray:
+    """How far each second sits above the median of its surroundings (never negative).
 
-    The baseline is the median loudness of the surrounding `baseline_seconds`. A median
+    Works for any per-second measurement: loudness in dB, words per second, ... A median
     ignores short spikes, so the baseline tracks "normal for this part of the stream":
-    a shout during a quiet chat scores high, the same volume during loud music doesn't.
+    a shout during a quiet chat stands out, the same volume during loud music doesn't.
     """
-    if loudness.size == 0:
-        return loudness.copy()
+    if signal.size == 0:
+        return signal.copy()
     half = baseline_seconds // 2
-    # Mirror the audio at both ends so the first/last minute still has a baseline. Not
+    # Mirror the data at both ends so the first/last minute still has a baseline. Not
     # mode="edge": that repeats the single first value 60 times, and streams often open
     # with a silent second, which made the whole opening minute look "loud".
-    padded = np.pad(loudness, half, mode="reflect")
+    padded = np.pad(signal, half, mode="reflect")
     windows = sliding_window_view(padded, 2 * half + 1)  # one row per second; no copying
     baseline = np.median(windows, axis=1)
-    return np.clip(loudness - baseline, 0.0, None)
+    return np.clip(signal - baseline, 0.0, None)
 
 
 def window_scores(signal: FloatArray, duration: int) -> FloatArray:
@@ -54,9 +60,6 @@ def window_scores(signal: FloatArray, duration: int) -> FloatArray:
     weights = np.hanning(duration + 2)[1:-1]  # drop the zero endpoints
     kernel = weights / weights.sum()
     return np.convolve(signal, kernel, mode="valid")
-
-
-MIN_SCORE = 1.0  # dB: roughly the smallest loudness change people notice
 
 
 def pick_windows(
@@ -80,14 +83,15 @@ def pick_windows(
     return picks
 
 
-def find_loud_moments(
-    loudness: FloatArray, *, count: int = 5, duration: int = 30, baseline_seconds: int = 120
+def find_highlights(
+    strength: FloatArray, *, count: int = 5, duration: int = 30, min_score: float = MIN_SCORE
 ) -> list[Highlight]:
-    """The `count` non-overlapping `duration`-second windows that stand out most in volume."""
-    signal = excitement(loudness, baseline_seconds=baseline_seconds)
-    scores = window_scores(signal, duration)
-    clip_length = min(duration, loudness.size)
+    """The `count` best non-overlapping `duration`-second windows of a strength signal."""
+    scores = window_scores(strength, duration)
+    clip_length = min(duration, strength.size)
     return [
-        Highlight(start=start, duration=clip_length, score=round(score, 2))
-        for start, score in pick_windows(scores, duration=duration, count=count)
+        Highlight(start=start, duration=clip_length, score=round(score, 3))
+        for start, score in pick_windows(
+            scores, duration=duration, count=count, min_score=min_score
+        )
     ]
