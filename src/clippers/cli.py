@@ -18,6 +18,7 @@ from clippers.autoclip import AutoOptions, Detection, find_moments, render_clips
 from clippers.batch import ClipOutcome, run_batch
 from clippers.framing import Framing
 from clippers.ingest import DEFAULT_DOWNLOAD_DIR, DownloadError, download, resolve_source
+from clippers.logs import configure_logging
 from clippers.moments import MomentsFile, load_moments, save_moments
 from clippers.pipeline import CaptionOptions, make_clip
 from clippers.timecode import format_timestamp, parse_timestamp
@@ -73,20 +74,6 @@ def load_env_file() -> Path | None:
     load_dotenv(found, override=False)
     logger.debug("loaded settings from %s", found)  # never log the values themselves
     return Path(found)
-
-
-def configure_logging(*, verbose: bool) -> None:
-    """Normal: our own INFO messages, plus only warnings from libraries. Verbose: everything.
-
-    Loggers form a tree by dotted name, so the "clippers" level covers clippers.video,
-    clippers.transcribe, etc., while httpx/faster_whisper/... inherit the root's level.
-    """
-    logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.WARNING,
-        format="%(levelname)s %(name)s: %(message)s",
-        force=True,  # replace any handlers left over from a previous config
-    )
-    logging.getLogger("clippers").setLevel(logging.DEBUG if verbose else logging.INFO)
 
 
 @app.command("download")

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from clippers import netguard
 from tests.media import MakeVideo
 
 
@@ -69,11 +70,14 @@ def isolate_from_real_setup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
       real .env (and no test can write output/ or downloads/ into the repo);
     - the cache points at a temp folder, never ~/.cache/clippers;
     - OpenAI is pointed at a port that refuses connections, so even a test that slips
-      through makes no paid request: it fails fast instead.
+      through makes no paid request: it fails fast instead;
+    - the SSRF guard's DNS lookup answers with a public address instead of asking real
+      DNS (tests that need another answer patch netguard._resolve themselves).
     Tests that need any of these set them explicitly (monkeypatch.setenv/chdir).
     """
     for key in ("OPENAI_API_KEY", "CLIPPERS_AI_MODEL"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("CLIPPERS_CACHE_DIR", str(tmp_path / "cache"))
     monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:9/no-network-in-tests")
+    monkeypatch.setattr(netguard, "_resolve", lambda host, port: ["8.8.8.8"])
     monkeypatch.chdir(tmp_path)

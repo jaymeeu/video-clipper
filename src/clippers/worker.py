@@ -11,6 +11,7 @@ from arq.connections import RedisSettings
 from dotenv import find_dotenv, load_dotenv
 
 from clippers.jobs import RedisJobStore, ServiceSettings, run_job
+from clippers.logs import configure_logging
 
 # The arq CLI imports this module directly (no `clippers` CLI callback runs), so load .env
 # here, before WorkerSettings reads its settings below.
@@ -19,7 +20,12 @@ _settings = ServiceSettings.from_env()
 
 
 async def startup(ctx: dict[str, Any]) -> None:
-    logging.getLogger("clippers").setLevel(logging.INFO)
+    # arq configures logging for its own "arq" logger only; without this, our progress
+    # messages (transcribing, rendering, ...) had no handler and were silently dropped.
+    configure_logging(verbose=False, timestamps=True)
+    # arq prints its own records through its own handler; stop them also bubbling up to
+    # the root handler added above, or every arq line appears twice.
+    logging.getLogger("arq").propagate = False
     ctx["store"] = RedisJobStore(ctx["redis"])  # reuse arq's own Redis connection
 
 

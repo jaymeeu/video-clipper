@@ -1,16 +1,19 @@
 import asyncio
+import logging
+import re
 from pathlib import Path
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
-from clippers import autoclip
+from clippers import autoclip, netguard
 from clippers.autoclip import AutoOptions, AutoResult
 from clippers.batch import ClipOutcome
 from clippers.framing import Framing
 from clippers.ingest import DownloadError
 from clippers.jobs import JobRecord, JobRequest, ServiceSettings, now, run_job
+from clippers.logs import configure_logging
 from clippers.moments import Moment, MomentsFile
 from tests.fakes import InMemoryJobStore
 
@@ -163,3 +166,32 @@ class TestJobRequest:
 
         assert (options.count, options.captions, options.language) == (3, False, "en")
         assert options.use_transcript is True
+
+
+def test_worker_rechecks_url_before_downloading(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The URL was public when queued, but resolves privately by the time the worker runs.
+    calls = fake_pipeline(monkeypatch)
+    monkeypatch.setattr(netguard, "_resolve", lambda host, port: ["10.0.0.7"])
+    store = InMemoryJobStore()
+    asyncio.run(store.save(queued()))
+
+    final = run("job1", store, tmp_path)
+
+    assert final.state == "failed"
+    assert final.error is not None and "private or reserved" in final.error
+    assert calls == []  # nothing was downloaded
+
+
+def test_worker_logging_shows_our_progress_with_timestamps(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_logging(verbose=False, timestamps=True)
+
+    logging.getLogger("clippers.transcribe").info("transcribing the whole video")
+    logging.getLogger("httpx").info("library chatter")
+
+    err = capsys.readouterr().err
+    assert re.search(r"^\d\d:\d\d:\d\d INFO clippers.transcribe: transcribing", err, re.M)
+    assert "library chatter" not in err

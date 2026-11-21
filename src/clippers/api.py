@@ -5,6 +5,7 @@ Run it with:  uv run uvicorn --factory clippers.api:make_app --reload
 Interactive docs at http://localhost:8000/docs
 """
 
+import asyncio
 import logging
 import secrets
 import uuid
@@ -29,6 +30,7 @@ from clippers.jobs import (
     ServiceSettings,
     now,
 )
+from clippers.netguard import UnsafeURLError, check_public_url
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +144,11 @@ def create_app(
         enqueue: EnqueueDep,
     ) -> JobView:
         """Queue a video for clipping. Returns immediately; poll the job for progress."""
+        try:
+            # DNS lookups block, so run the check in a thread (the worker checks again).
+            await asyncio.to_thread(check_public_url, body.url)
+        except UnsafeURLError as e:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"url: {e}") from e
         created = now()
         record = JobRecord(
             id=uuid.uuid4().hex,

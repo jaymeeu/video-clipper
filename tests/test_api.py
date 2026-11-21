@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from clippers import netguard
 from clippers.api import create_app
 from clippers.jobs import ClipInfo, JobRecord, JobRequest, ServiceSettings, now
 from tests.fakes import InMemoryJobStore, RecordingQueue
@@ -151,3 +152,15 @@ class TestApiKey:
 
     def test_health_check_needs_no_key(self, client: TestClient) -> None:
         assert client.get("/health").json() == {"status": "ok"}
+
+
+def test_private_network_urls_are_refused_before_queueing(
+    client: TestClient, queue: RecordingQueue, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(netguard, "_resolve", lambda host, port: ["169.254.169.254"])
+
+    response = client.post("/jobs", json={"url": "http://metadata.example/latest/"})
+
+    assert response.status_code == 422
+    assert "private or reserved" in response.json()["detail"]
+    assert queue.job_ids == []

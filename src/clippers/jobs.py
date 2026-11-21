@@ -19,6 +19,7 @@ from clippers.ai import AIScoringError
 from clippers.autoclip import AutoOptions
 from clippers.framing import Framing
 from clippers.ingest import DownloadError, is_url
+from clippers.netguard import check_public_url
 from clippers.video import FFmpegError
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 JobState = Literal["queued", "running", "done", "failed"]
 
 # Errors that mean "this video/request can't be processed", shown to the client as-is.
+# (netguard.UnsafeURLError is a ValueError, so a blocked URL lands here too.)
 # Anything else is a bug: logged with a traceback, reported as a generic internal error.
 _EXPECTED_ERRORS = (AIScoringError, DownloadError, FFmpegError, FileNotFoundError, ValueError)
 
@@ -157,6 +159,9 @@ async def run_job(job_id: str, store: JobStore, settings: ServiceSettings) -> Jo
         asyncio.run_coroutine_threadsafe(store.save(record), loop).result()
 
     try:
+        # Check the URL again right before downloading: the job may have waited in the
+        # queue, and DNS answers can change in the meantime.
+        await asyncio.to_thread(check_public_url, record.request.url)
         # The pipeline is blocking (ffmpeg, Whisper): run it in a thread so the event
         # loop (and arq's heartbeats) stay responsive. ≈ a worker_thread in Node.
         result = await asyncio.to_thread(
