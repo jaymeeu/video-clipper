@@ -36,6 +36,9 @@ class Moment(BaseModel):
     start: Seconds
     duration: float = Field(default=30.0, gt=0, le=600)
     title: str | None = Field(default=None, max_length=200)
+    # Filled in by the highlight detector; optional for hand-written files.
+    score: float | None = None  # higher = stronger highlight; only comparable within one file
+    reason: str | None = Field(default=None, max_length=500)  # why it was picked
 
 
 class MomentsFile(BaseModel):
@@ -61,6 +64,13 @@ def load_moments(path: Path) -> MomentsFile:
         return MomentsFile.model_validate_json(raw)
     except ValidationError as e:
         raise MomentsFileError(format_validation_error(path, e)) from e
+
+
+def save_moments(plan: MomentsFile, path: Path) -> Path:
+    """Write `plan` as pretty JSON, leaving out unset optional fields."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(plan.model_dump_json(indent=2, exclude_none=True) + "\n", encoding="utf-8")
+    return path
 
 
 def format_validation_error(path: Path, error: ValidationError) -> str:

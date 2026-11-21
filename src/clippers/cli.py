@@ -11,11 +11,12 @@ from typing import Annotated, NoReturn
 import typer
 
 from clippers.batch import run_batch
+from clippers.detect import detect_moments
 from clippers.framing import Framing
 from clippers.ingest import DEFAULT_DOWNLOAD_DIR, DownloadError, download, resolve_source
-from clippers.moments import load_moments
+from clippers.moments import load_moments, save_moments
 from clippers.pipeline import CaptionOptions, make_clip
-from clippers.timecode import parse_timestamp
+from clippers.timecode import format_timestamp, parse_timestamp
 from clippers.transcribe import DEFAULT_MODEL
 from clippers.video import FFmpegError
 
@@ -163,6 +164,39 @@ def batch(
         for outcome in failed:
             typer.secho(f"  #{outcome.number} failed: {outcome.error}", fg="red", err=True)
         raise typer.Exit(code=1)
+
+
+@app.command()
+def detect(
+    video: Annotated[str, typer.Argument(help="Source video: a local file or an http(s) URL.")],
+    count: Annotated[
+        int, typer.Option("--count", "-n", min=1, max=50, help="Maximum moments to pick.")
+    ] = 5,
+    duration: Annotated[
+        int, typer.Option("--duration", "-d", min=5, max=600, help="Clip length (s).")
+    ] = 30,
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", "-o", help="Moments file. Default: output/<video>.moments.json"),
+    ] = None,
+) -> None:
+    """Find the loudest-standing-out moments in VIDEO and write them to a moments file."""
+    try:
+        source = resolve_source(video)
+        plan = detect_moments(video, source, count=count, duration=duration)
+    except FFmpegError as e:
+        logger.debug("ffmpeg stderr:\n%s", e.stderr)
+        _fail(str(e))
+    except (DownloadError, FileNotFoundError, ValueError) as e:
+        _fail(str(e))
+
+    path = save_moments(plan, output or Path("output") / f"{source.stem}.moments.json")
+    for rank, moment in enumerate(plan.moments, start=1):
+        typer.echo(
+            f"  #{rank}  {format_timestamp(moment.start)}  score {moment.score:>5.1f}", err=True
+        )
+    typer.echo(f"next: clippers batch {path}", err=True)
+    typer.echo(path)  # stdout: just the path, so `clippers batch $(clippers detect ...)` works
 
 
 def _fail(message: str) -> NoReturn:
