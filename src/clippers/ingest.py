@@ -2,6 +2,7 @@
 
 import logging
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 import yt_dlp
@@ -28,22 +29,32 @@ class DownloadError(RuntimeError):
 class _YtDlpLogger:
     """Route yt-dlp's console output into our logging instead of stdout.
 
-    yt-dlp accepts any object with debug/warning/error methods (duck typing).
+    yt-dlp accepts any object with these methods (duck typing); the signatures match
+    the logger Protocol in yt-dlp's type stubs, so pyright can verify it structurally.
     Errors go to DEBUG because we re-raise them as DownloadError; logging them
     here as well would print every failure twice.
     """
 
-    def debug(self, msg: str) -> None:
-        logger.debug(msg)
+    def __init__(self, ydl: object | None = None) -> None:
+        pass
 
-    def info(self, msg: str) -> None:
-        logger.debug(msg)
+    def debug(self, message: str) -> None:
+        logger.debug(message)
 
-    def warning(self, msg: str) -> None:
-        logger.warning(msg)
+    def info(self, message: str) -> None:
+        logger.debug(message)
 
-    def error(self, msg: str) -> None:
-        logger.debug(msg)
+    def warning(self, message: str, *, once: bool = False, only_once: bool = False) -> None:
+        logger.warning(message)
+
+    def error(self, message: str) -> None:
+        logger.debug(message)
+
+    def stdout(self, message: str) -> None:
+        logger.debug(message)
+
+    def stderr(self, message: str) -> None:
+        logger.debug(message)
 
 
 def is_url(value: str) -> bool:
@@ -66,29 +77,33 @@ def download(url: str, dest_dir: Path = DEFAULT_DOWNLOAD_DIR) -> Path:
         raise ValueError(f"not an http(s) URL: {url!r}")
 
     dest_dir.mkdir(parents=True, exist_ok=True)
-    options = {
-        "format": _FORMAT,
-        "merge_output_format": "mp4",
-        "outtmpl": str(dest_dir / "%(extractor)s-%(id)s.%(ext)s"),
-        "noplaylist": True,
-        "quiet": True,
-        "noprogress": True,
-        "logger": _YtDlpLogger(),
-        "js_runtimes": {"deno": {}, "node": {}},  # YouTube needs a JS runtime; use either
-    }
 
     logger.info("fetching %s", url)
     try:
-        with yt_dlp.YoutubeDL(options) as ydl:
+        # Options passed inline so the type checker validates every key against
+        # yt-dlp's own TypedDict: a misspelt option becomes a type error, not a no-op.
+        with yt_dlp.YoutubeDL(
+            {
+                "format": _FORMAT,
+                "merge_output_format": "mp4",
+                "outtmpl": str(dest_dir / "%(extractor)s-%(id)s.%(ext)s"),
+                "noplaylist": True,
+                "quiet": True,
+                "noprogress": True,
+                "logger": _YtDlpLogger(),
+                "js_runtimes": {"deno": {}, "node": {}},  # YouTube needs a JS runtime
+            }
+        ) as ydl:
             info = ydl.extract_info(url, download=True)
     except YtDlpDownloadError as e:
         reason = str(e).removeprefix("ERROR: ")
         raise DownloadError(f"could not download {url}: {reason}") from e
 
-    downloads = (info or {}).get("requested_downloads") or []
+    # yt-dlp's info dict is loosely typed (dict[str, Any]); pin down the one field we use.
+    downloads: list[dict[str, Any]] = (info or {}).get("requested_downloads") or []
     if not downloads:
         raise DownloadError(f"no downloadable video found at {url}")
 
-    path = Path(downloads[0]["filepath"])
+    path = Path(str(downloads[0]["filepath"]))
     logger.info("downloaded -> %s", path)
     return path

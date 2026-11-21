@@ -12,8 +12,10 @@ import typer
 
 from clippers.framing import Framing
 from clippers.ingest import DEFAULT_DOWNLOAD_DIR, DownloadError, download, is_url
+from clippers.pipeline import CaptionOptions, make_clip
 from clippers.timecode import parse_timestamp
-from clippers.video import FFmpegError, cut_clip
+from clippers.transcribe import DEFAULT_MODEL
+from clippers.video import FFmpegError
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +74,19 @@ def cut(
             "crop: fill 9:16, cut the sides. original: no reframing.",
         ),
     ] = Framing.BLUR,
+    captions: Annotated[
+        bool, typer.Option("--captions/--no-captions", help="Transcribe and burn in captions.")
+    ] = True,
+    model: Annotated[
+        str,
+        typer.Option(
+            "--model", "-m", help="Whisper model: tiny, base, small, medium, large-v3, turbo."
+        ),
+    ] = DEFAULT_MODEL,
+    language: Annotated[
+        str | None,
+        typer.Option("--language", "-l", help="Spoken language code, e.g. en. Default: detect."),
+    ] = None,
 ) -> None:
     """Cut a single clip from VIDEO (file or URL) at a given timestamp."""
     try:
@@ -79,16 +94,26 @@ def cut(
     except ValueError as e:
         raise typer.BadParameter(str(e), param_hint="'--start'") from e
 
+    caption_options = CaptionOptions(model=model, language=language) if captions else None
     try:
         source = download(video) if is_url(video) else Path(video)
-        clip = cut_clip(source, output, start=start_seconds, duration=duration, framing=framing)
+        result = make_clip(
+            source,
+            output,
+            start=start_seconds,
+            duration=duration,
+            framing=framing,
+            captions=caption_options,
+        )
     except FFmpegError as e:
         logger.debug("ffmpeg stderr:\n%s", e.stderr)
         _fail(str(e))
     except (DownloadError, FileNotFoundError, ValueError) as e:
         _fail(str(e))
 
-    typer.echo(clip)  # stdout: just the path, so scripts can capture it
+    if result.transcript is not None:
+        logger.info("transcript: %s", result.transcript.text or "(no speech)")
+    typer.echo(result.path)  # stdout: just the path, so scripts can capture it
 
 
 def _fail(message: str) -> NoReturn:

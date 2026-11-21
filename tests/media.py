@@ -16,6 +16,23 @@ requires_ffmpeg = pytest.mark.skipif(
 )
 
 
+def _ffmpeg_has_filter(name: str) -> bool:
+    if shutil.which("ffmpeg") is None:
+        return False
+    out = subprocess.run(["ffmpeg", "-hide_banner", "-filters"], capture_output=True, text=True)
+    # Lines look like: " .. subtitles         V->V       Render text subtitles..."
+    return any(line.split()[1:2] == [name] for line in out.stdout.splitlines())
+
+
+requires_libass = pytest.mark.skipif(
+    not _ffmpeg_has_filter("subtitles"), reason="ffmpeg built without libass (no subtitles filter)"
+)
+
+requires_say = pytest.mark.skipif(
+    shutil.which("say") is None, reason="needs macOS `say` to synthesise speech"
+)
+
+
 def probe_duration(path: Path) -> float:
     """Container duration in seconds, via ffprobe."""
     out = subprocess.run(

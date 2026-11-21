@@ -14,7 +14,18 @@ def test_cut_writes_clip_and_prints_path(sample_video: Path, tmp_path: Path) -> 
     out = tmp_path / "clip.mp4"
 
     result = runner.invoke(
-        app, ["cut", str(sample_video), "--start", "0:02", "--duration", "2", "-o", str(out)]
+        app,
+        [
+            "cut",
+            "--no-captions",
+            str(sample_video),
+            "--start",
+            "0:02",
+            "--duration",
+            "2",
+            "-o",
+            str(out),
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -42,7 +53,9 @@ def test_cut_corrupt_video_fails_cleanly(tmp_path: Path) -> None:
     fake = tmp_path / "fake.mp4"
     fake.write_text("not a video")
 
-    result = runner.invoke(app, ["cut", str(fake), "--start", "0", "-o", str(tmp_path / "o.mp4")])
+    result = runner.invoke(
+        app, ["cut", "--no-captions", str(fake), "--start", "0", "-o", str(tmp_path / "o.mp4")]
+    )
 
     assert result.exit_code == 1
     assert "error: ffmpeg failed" in result.stderr

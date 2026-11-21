@@ -106,7 +106,18 @@ def test_cli_cut_accepts_url(
     out = tmp_path / "clip.mp4"
 
     result = CliRunner().invoke(
-        app, ["cut", f"{video_server}/sample.mp4", "-s", "0:02", "-d", "1", "-o", str(out)]
+        app,
+        [
+            "cut",
+            "--no-captions",
+            f"{video_server}/sample.mp4",
+            "-s",
+            "0:02",
+            "-d",
+            "1",
+            "-o",
+            str(out),
+        ],
     )
 
     assert result.exit_code == 0, result.output

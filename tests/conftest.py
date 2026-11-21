@@ -1,5 +1,6 @@
 """Shared pytest fixtures. pytest auto-discovers this file and injects fixtures by name."""
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -10,7 +11,12 @@ from tests.media import MakeVideo
 
 @pytest.fixture(scope="session")
 def make_video(tmp_path_factory: pytest.TempPathFactory) -> MakeVideo:
-    """Factory: generate a test-pattern video with a sine tone. Cached per (size, length)."""
+    """Factory: generate a test-pattern video with a sine tone. Cached per (size, length).
+
+    Skips (rather than errors) any test that uses it when ffmpeg isn't installed.
+    """
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg not installed")
     cache: dict[tuple[int, int, float], Path] = {}
 
     def _make(width: int = 320, height: int = 240, seconds: float = 10.0) -> Path:

@@ -8,6 +8,10 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    # faster-whisper 1.2.1 calls av.open(metadata_errors=...), removed in PyAV 19.
+    # Drop this cap once a faster-whisper release supports PyAV 19 (test: pytest -m slow).
+    "av<19",
+    "faster-whisper>=1.2.1",
     "pydantic>=2.14.3",
     "typer>=0.29.2",
     "yt-dlp[default]>=2026.10.26",
@@ -22,6 +26,7 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "pyright>=1.1.414",
     "pytest>=9.2.0",
     "ruff>=0.17.5",
 ]
@@ -37,4 +42,22 @@ select = ["E", "F", "I", "B", "UP", "SIM", "PTH"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra --strict-markers"
+addopts = "-ra --strict-markers -m 'not slow'"
+markers = [
+    "slow: loads a real Whisper model (downloads ~75MB on first run). Run with: pytest -m slow",
+]
+
+[tool.uv]
+# Dev machine is an Intel Mac; newer onnxruntime/ctranslate2 releases dropped those wheels.
+# This makes uv pick the newest versions that still install here.
+required-environments = ["sys_platform == 'darwin' and platform_machine == 'x86_64'"]
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "standard"
+# Our own code gets strict checks; tests stay on standard (pytest's fixtures and
+# monkeypatching are dynamic by nature).
+strict = ["src"]
