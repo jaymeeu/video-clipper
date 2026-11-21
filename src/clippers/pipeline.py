@@ -33,8 +33,12 @@ def make_clip(
     duration: float,
     framing: Framing = Framing.BLUR,
     captions: CaptionOptions | None = None,
+    transcript: Transcript | None = None,
 ) -> ClipResult:
     """Cut one clip, optionally transcribing it and burning in word-highlighted captions.
+
+    `transcript` is an existing transcript of the *whole* video. When given, the clip's
+    captions are cut out of it, skipping audio extraction and Whisper entirely.
 
     A clip that runs past the end of the video is shortened (with a warning); one that
     starts past the end raises ValueError. ffmpeg itself would "succeed" with an empty file.
@@ -46,19 +50,22 @@ def make_clip(
 
     with tempfile.TemporaryDirectory(prefix="clippers-") as tmp:
         work = Path(tmp)
-        audio = extract_audio(source, work / "audio.wav", start=start, duration=duration)
-        transcript = transcribe(audio, model=captions.model, language=captions.language)
+        if transcript is not None:
+            clip_transcript = transcript.between(start, start + duration)
+        else:
+            audio = extract_audio(source, work / "audio.wav", start=start, duration=duration)
+            clip_transcript = transcribe(audio, model=captions.model, language=captions.language)
 
         subtitles = None
-        if transcript.words:
-            subtitles = write_ass(transcript.words, work / "captions.ass")
+        if clip_transcript.words:
+            subtitles = write_ass(clip_transcript.words, work / "captions.ass")
         else:
             logger.warning("no speech detected; clip will have no captions")
 
         path = cut_clip(
             source, output, start=start, duration=duration, framing=framing, subtitles=subtitles
         )
-    return ClipResult(path=path, transcript=transcript)
+    return ClipResult(path=path, transcript=clip_transcript)
 
 
 _MIN_CLIP = 0.5  # seconds; anything shorter isn't a usable clip

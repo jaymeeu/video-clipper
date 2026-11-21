@@ -43,6 +43,23 @@ class Transcript(BaseModel):
     def text(self) -> str:
         return " ".join(w.text for w in self.words)
 
+    def between(self, start: float, end: float) -> "Transcript":
+        """The words spoken in [start, end), re-timed so `start` becomes 0.
+
+        A word counts if it starts inside the range; its end is cut at the range end.
+        """
+        words = [
+            Word(
+                text=w.text,
+                start=w.start - start,
+                end=min(w.end, end) - start,
+                probability=w.probability,
+            )
+            for w in self.words
+            if start <= w.start < end
+        ]
+        return self.model_copy(update={"words": words})
+
 
 @lru_cache(maxsize=2)
 def _load_model(name: str) -> "WhisperModel":
@@ -108,21 +125,30 @@ def transcribe(
     )
 
 
-def transcribe_cached(
-    video: Path, *, model: str = DEFAULT_MODEL, language: str | None = None
-) -> Transcript:
-    """Transcribe a whole video, reusing a cached result when nothing has changed.
-
-    The cache key is the file's path, size and modification time plus the model and
+def _cache_file(video: Path, model: str, language: str | None) -> Path:
+    """The cache key is the file's path, size and modification time plus the model and
     language. Hashing the contents would be more exact but means reading gigabytes on
     every run; if the file is replaced, its size or mtime changes and the cache misses.
     """
     stat = video.stat()  # raises FileNotFoundError for a missing video
-    path = cache.cache_path(
+    return cache.cache_path(
         "transcripts",
         str(video.resolve()), str(stat.st_size), str(stat.st_mtime_ns), model, str(language),
     )  # fmt: skip
 
+
+def load_cached_transcript(
+    video: Path, *, model: str = DEFAULT_MODEL, language: str | None = None
+) -> Transcript | None:
+    """The cached whole-video transcript if there is one. Never transcribes."""
+    return cache.load(_cache_file(video, model, language), Transcript)
+
+
+def transcribe_cached(
+    video: Path, *, model: str = DEFAULT_MODEL, language: str | None = None
+) -> Transcript:
+    """Transcribe a whole video, reusing a cached result when nothing has changed."""
+    path = _cache_file(video, model, language)
     if (cached := cache.load(path, Transcript)) is not None:
         logger.info("using cached transcript (%d words)", len(cached.words))
         return cached

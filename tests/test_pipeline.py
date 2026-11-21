@@ -161,3 +161,31 @@ def test_make_clip_with_captions_returns_path_as_given(
 
     assert result.path == Path("out/clip.mp4")  # not silently made absolute
     assert (tmp_path / "out" / "clip.mp4").is_file()
+
+
+@requires_ffmpeg
+@requires_libass
+def test_make_clip_cuts_captions_from_whole_video_transcript(
+    sample_video: Path, tmp_path: Path, fake_transcribe: list[Path]
+) -> None:
+    whole = Transcript(
+        language="en",
+        language_probability=0.9,
+        words=[
+            Word(text="before", start=0.5, end=0.9, probability=0.9),
+            Word(text="inside", start=3.2, end=3.6, probability=0.9),
+            Word(text="too", start=4.1, end=4.4, probability=0.9),
+        ],
+    )
+
+    result = make_clip(
+        sample_video, tmp_path / "c.mp4", start=3.0, duration=2.0,
+        captions=CaptionOptions(), transcript=whole,
+    )  # fmt: skip
+
+    assert fake_transcribe == []  # Whisper never ran
+    assert result.transcript is not None
+    assert [(w.text, round(w.start, 1)) for w in result.transcript.words] == [
+        ("inside", 0.2), ("too", 1.1),
+    ]  # fmt: skip
+    assert probe_size(result.path) == (1080, 1920)

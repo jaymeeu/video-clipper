@@ -8,6 +8,7 @@ from pathlib import Path
 
 from clippers.moments import Moment, MomentsFile
 from clippers.pipeline import CaptionOptions, make_clip
+from clippers.transcribe import Transcript
 from clippers.video import FFmpegError
 
 logger = logging.getLogger(__name__)
@@ -51,8 +52,13 @@ def run_batch(
     output_dir: Path,
     *,
     captions: CaptionOptions | None,
+    transcript: Transcript | None = None,
 ) -> list[ClipOutcome]:
-    """Make one clip per moment. A failing clip is recorded and the batch carries on."""
+    """Make one clip per moment. A failing clip is recorded and the batch carries on.
+
+    With a whole-video `transcript`, captions are cut from it instead of transcribing
+    each clip again.
+    """
     outcomes: list[ClipOutcome] = []
     total = len(plan.moments)
     for number, moment in enumerate(plan.moments, start=1):
@@ -66,6 +72,7 @@ def run_batch(
                 duration=moment.duration,
                 framing=plan.framing,
                 captions=captions,
+                transcript=transcript,
             )
         except _CLIP_ERRORS as e:
             logger.error("[%d/%d] failed: %s", number, total, e)

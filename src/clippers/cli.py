@@ -24,7 +24,7 @@ from clippers.ingest import DEFAULT_DOWNLOAD_DIR, DownloadError, download, resol
 from clippers.moments import load_moments, save_moments
 from clippers.pipeline import CaptionOptions, make_clip
 from clippers.timecode import format_timestamp, parse_timestamp
-from clippers.transcribe import DEFAULT_MODEL, transcribe_cached
+from clippers.transcribe import DEFAULT_MODEL, load_cached_transcript, transcribe_cached
 from clippers.video import FFmpegError
 
 logger = logging.getLogger(__name__)
@@ -176,7 +176,14 @@ def batch(
 
     out_dir = output_dir or Path("output") / moments_file.stem
     caption_options = CaptionOptions(model=model, language=language) if plan.captions else None
-    outcomes = run_batch(plan, source, out_dir, captions=caption_options)
+    transcript = None
+    if caption_options is not None:
+        # Reuse the whole-video transcript from `detect` if it's cached (same model and
+        # language); otherwise each clip is transcribed on its own, as before.
+        transcript = load_cached_transcript(source, model=model, language=language)
+        if transcript is not None:
+            logger.info("captions come from the cached transcript: no re-transcribing")
+    outcomes = run_batch(plan, source, out_dir, captions=caption_options, transcript=transcript)
 
     for outcome in outcomes:
         if outcome.path is not None:

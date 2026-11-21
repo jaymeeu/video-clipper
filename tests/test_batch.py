@@ -5,10 +5,12 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from clippers import cli, pipeline
 from clippers.batch import run_batch
 from clippers.cli import app
 from clippers.moments import MomentsFile
 from clippers.pipeline import make_clip
+from clippers.transcribe import Transcript, Word
 from tests.media import probe_duration, probe_size
 
 # sample_video is 10s long.
@@ -120,3 +122,28 @@ class TestBatchCli:
         assert result.exit_code == 1
         assert "moments[0].start: invalid timestamp" in result.stderr
         assert "Traceback" not in result.output
+
+
+def test_cli_batch_reuses_cached_transcript_for_captions(
+    sample_video: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    whole = Transcript(
+        language="en",
+        language_probability=0.9,
+        words=[Word(text="cached", start=1.2, end=1.6, probability=0.9)],
+    )
+    monkeypatch.setattr(cli, "load_cached_transcript", lambda video, **_: whole)  # pyright: ignore[reportUnknownLambdaType]
+
+    def whisper_must_not_run(audio: Path, **_: object) -> Transcript:
+        raise AssertionError("batch transcribed a clip despite a cached transcript")
+
+    monkeypatch.setattr(pipeline, "transcribe", whisper_must_not_run)
+    moments = tmp_path / "m.json"
+    moments.write_text(
+        json.dumps({"source": str(sample_video), "moments": [{"start": 1, "duration": 2}]})
+    )
+
+    result = CliRunner().invoke(app, ["batch", str(moments), "-o", str(tmp_path / "o")])
+
+    assert result.exit_code == 0, result.output
+    assert "1/1 clips made" in result.stderr
