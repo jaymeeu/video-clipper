@@ -20,3 +20,6 @@ output/
 
 # yt-dlp download cache
 downloads/
+
+# macOS Finder metadata
+.DS_Store
