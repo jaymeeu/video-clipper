@@ -26,3 +26,6 @@ downloads/
 
 # Local secrets (API keys). Never commit; see .env.example
 .env
+
+# API service data (job outputs, downloads)
+data/

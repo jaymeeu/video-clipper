@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from clippers import cli, pipeline
+from clippers import autoclip, pipeline
 from clippers.ai import AIMoment
 from clippers.audio import loudness_per_second
 from clippers.cli import app
@@ -114,7 +114,7 @@ def test_cli_detect_uses_cached_transcript(
         calls.append(video)
         return _reactions_at(100)
 
-    monkeypatch.setattr(cli, "transcribe_cached", fake_transcribe_cached)
+    monkeypatch.setattr(autoclip, "transcribe_cached", fake_transcribe_cached)
     out = tmp_path / "m.json"
 
     result = CliRunner().invoke(app, ["detect", str(bursty_video), "-d", "20", "-o", str(out)])
@@ -141,14 +141,14 @@ def test_cli_ai_requires_transcript(bursty_video: Path) -> None:
     result = CliRunner().invoke(app, ["detect", "--ai", "--no-transcript", str(bursty_video)])
 
     assert result.exit_code == 2
-    assert "--ai reads the transcript" in result.output
+    assert "AI scoring needs the transcript" in result.output
 
 
 def test_cli_ai_without_key_fails_cleanly(
     bursty_video: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.setattr(cli, "transcribe_cached", lambda video, **_: _reactions_at(100))  # pyright: ignore[reportUnknownLambdaType]
+    monkeypatch.setattr(autoclip, "transcribe_cached", lambda video, **_: _reactions_at(100))  # pyright: ignore[reportUnknownLambdaType]
 
     result = CliRunner().invoke(app, ["detect", "--ai", str(bursty_video), "-d", "20"])
 
@@ -177,7 +177,7 @@ class TestAuto:
     def test_reuses_transcript_for_captions_and_saves_framing(
         self, bursty_video: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(cli, "transcribe_cached", lambda video, **_: _reactions_at(100))  # pyright: ignore[reportUnknownLambdaType]
+        monkeypatch.setattr(autoclip, "transcribe_cached", lambda video, **_: _reactions_at(100))  # pyright: ignore[reportUnknownLambdaType]
 
         def whisper_must_not_run(audio: Path, **_: object) -> Transcript:
             raise AssertionError("auto re-transcribed a clip despite having the transcript")

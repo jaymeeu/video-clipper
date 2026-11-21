@@ -1,0 +1,13 @@
+# Local infrastructure for the clippers API. Start with: docker compose up -d
+services:
+  redis:
+    image: redis:7.4-alpine
+    # Bound to localhost only: never reachable from other machines on your network.
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-data:/data  # queued jobs survive a container restart
+    restart: unless-stopped
+
+volumes:
+  redis-data:

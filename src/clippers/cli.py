@@ -5,21 +5,17 @@ raises exceptions and emits log records; this layer decides how users see them.
 """
 
 import logging
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, NoReturn
+from typing import Annotated, Any, NoReturn
 
 import typer
 from dotenv import find_dotenv, load_dotenv
 
 from clippers.ai import (
-    AIMoment,
     AIScoringError,
-    OpenAISuggester,
-    suggest_moments,
 )
-from clippers.batch import run_batch
-from clippers.detect import detect_moments
+from clippers.autoclip import AutoOptions, Detection, find_moments, render_clips
+from clippers.batch import ClipOutcome, run_batch
 from clippers.framing import Framing
 from clippers.ingest import DEFAULT_DOWNLOAD_DIR, DownloadError, download, resolve_source
 from clippers.moments import MomentsFile, load_moments, save_moments
@@ -27,9 +23,7 @@ from clippers.pipeline import CaptionOptions, make_clip
 from clippers.timecode import format_timestamp, parse_timestamp
 from clippers.transcribe import (
     DEFAULT_MODEL,
-    Transcript,
     load_cached_transcript,
-    transcribe_cached,
 )
 from clippers.video import FFmpegError
 
@@ -193,52 +187,23 @@ AIModelOption = Annotated[
 ]
 
 
-@dataclass(frozen=True, slots=True)
-class _Detection:
-    source: Path  # the local video file (downloaded if VIDEO was a URL)
-    plan: MomentsFile
-    transcript: Transcript | None
-
-
-def _find_moments(
-    video: str,
-    *,
-    count: int,
-    duration: int,
-    use_transcript: bool,
-    model: str,
-    language: str | None,
-    use_ai: bool,
-    ai_model: str | None,
-) -> _Detection:
-    """Everything `detect` and `auto` share: fetch, transcribe, ask the AI, score."""
-    if use_ai and not use_transcript:
-        raise typer.BadParameter(
-            "--ai reads the transcript, so it can't be used with --no-transcript"
-        )
+def _find_moments(video: str, options: AutoOptions) -> Detection:
+    """autoclip.find_moments, with errors turned into clean CLI messages."""
     try:
-        source = resolve_source(video)
-        transcript = (
-            transcribe_cached(source, model=model, language=language) if use_transcript else None
-        )
-        ai_moments: list[AIMoment] = []
-        if use_ai and transcript is not None:
-            suggester = OpenAISuggester(ai_model)
-            ai_moments = suggest_moments(transcript, suggester, max_moments=max(10, count * 2))
-        plan = detect_moments(
-            video,
-            source,
-            count=count,
-            duration=duration,
-            transcript=transcript,
-            ai_moments=ai_moments,
-        )
+        return find_moments(video, options)
     except FFmpegError as e:
         logger.debug("ffmpeg stderr:\n%s", e.stderr)
         _fail(str(e))
     except (AIScoringError, DownloadError, FileNotFoundError, ValueError) as e:
         _fail(str(e))
-    return _Detection(source=source, plan=plan, transcript=transcript)
+
+
+def _options(**kwargs: Any) -> AutoOptions:
+    """AutoOptions from CLI flags; a bad combination is a usage error (exit 2)."""
+    try:
+        return AutoOptions(**kwargs)
+    except ValueError as e:
+        raise typer.BadParameter(str(e)) from e
 
 
 def _print_picks(plan: MomentsFile) -> None:
@@ -250,17 +215,8 @@ def _print_picks(plan: MomentsFile) -> None:
         )
 
 
-def _render(
-    plan: MomentsFile,
-    source: Path,
-    out_dir: Path,
-    *,
-    captions: CaptionOptions | None,
-    transcript: Transcript | None,
-) -> None:
-    """Everything `batch` and `auto` share: make the clips, report, exit 1 on any failure."""
-    outcomes = run_batch(plan, source, out_dir, captions=captions, transcript=transcript)
-
+def _report(outcomes: list[ClipOutcome], out_dir: Path) -> None:
+    """Print finished clip paths (stdout) and a summary (stderr); exit 1 on any failure."""
     for outcome in outcomes:
         if outcome.path is not None:
             typer.echo(outcome.path)  # stdout: one path per finished clip
@@ -299,7 +255,9 @@ def batch(
         if transcript is not None:
             logger.info("captions come from the cached transcript: no re-transcribing")
     out_dir = output_dir or Path("output") / moments_file.stem
-    _render(plan, source, out_dir, captions=caption_options, transcript=transcript)
+    _report(
+        run_batch(plan, source, out_dir, captions=caption_options, transcript=transcript), out_dir
+    )
 
 
 @app.command()
@@ -318,16 +276,16 @@ def detect(
     ai_model: AIModelOption = None,
 ) -> None:
     """Find the moments in VIDEO that stand out most and write them to a moments file."""
-    found = _find_moments(
-        video,
+    options = _options(
         count=count,
         duration=duration,
         use_transcript=use_transcript,
-        model=model,
+        whisper_model=model,
         language=language,
         use_ai=use_ai,
         ai_model=ai_model,
     )
+    found = _find_moments(video, options)
     path = save_moments(found.plan, output or Path("output") / f"{found.source.stem}.moments.json")
     _print_picks(found.plan)
     typer.echo(f"next: clippers batch {path}", err=True)
@@ -361,24 +319,25 @@ def auto(
     Same as `detect` then `batch`. The chosen moments are also saved as moments.json in
     the output folder, so you can tweak them and re-render with `clippers batch`.
     """
-    found = _find_moments(
-        video,
+    options = _options(
         count=count,
         duration=duration,
+        framing=framing,
+        captions=captions,
         use_transcript=use_transcript,
-        model=model,
+        whisper_model=model,
         language=language,
         use_ai=use_ai,
         ai_model=ai_model,
     )
-    plan = found.plan.model_copy(update={"framing": framing, "captions": captions})
+    found = _find_moments(video, options)
+    _print_picks(found.plan)
     out_dir = output_dir or Path("output") / found.source.stem
-    moments_path = save_moments(plan, out_dir / "moments.json")
-    _print_picks(plan)
-    logger.info("moments saved to %s (edit it and run `clippers batch` to re-render)", moments_path)
-
-    caption_options = CaptionOptions(model=model, language=language) if captions else None
-    _render(plan, found.source, out_dir, captions=caption_options, transcript=found.transcript)
+    result = render_clips(found, out_dir, options)
+    logger.info(
+        "moments saved to %s (edit it and run `clippers batch` to re-render)", result.moments_path
+    )
+    _report(result.outcomes, out_dir)
 
 
 def _fail(message: str) -> NoReturn:
