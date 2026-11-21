@@ -4,11 +4,12 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from clippers import cli
+from clippers import cli, pipeline
 from clippers.ai import AIMoment
 from clippers.audio import loudness_per_second
 from clippers.cli import app
 from clippers.detect import NoHighlightsError, detect_moments
+from clippers.framing import Framing
 from clippers.moments import load_moments
 from clippers.transcribe import Transcript, Word
 from tests.media import requires_ffmpeg
@@ -153,3 +154,45 @@ def test_cli_ai_without_key_fails_cleanly(
 
     assert result.exit_code == 1
     assert "OPENAI_API_KEY is not set" in result.stderr
+
+
+class TestAuto:
+    def test_detects_and_renders_in_one_go(self, bursty_video: Path, tmp_path: Path) -> None:
+        out = tmp_path / "clips"
+
+        result = CliRunner().invoke(
+            app,
+            ["auto", "--no-transcript", "--no-captions", str(bursty_video),
+             "-n", "3", "-d", "20", "-o", str(out)],
+        )  # fmt: skip
+
+        assert result.exit_code == 0, result.output
+        clips = result.stdout.splitlines()
+        assert len(clips) == 2  # the two bursts
+        assert all(Path(c).is_file() and Path(c).parent == out for c in clips)
+        saved = load_moments(out / "moments.json")  # kept for review / re-rendering
+        assert len(saved.moments) == 2
+        assert "2/2 clips made" in result.stderr
+
+    def test_reuses_transcript_for_captions_and_saves_framing(
+        self, bursty_video: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cli, "transcribe_cached", lambda video, **_: _reactions_at(100))  # pyright: ignore[reportUnknownLambdaType]
+
+        def whisper_must_not_run(audio: Path, **_: object) -> Transcript:
+            raise AssertionError("auto re-transcribed a clip despite having the transcript")
+
+        monkeypatch.setattr(pipeline, "transcribe", whisper_must_not_run)
+        out = tmp_path / "clips"
+
+        result = CliRunner().invoke(
+            app, ["auto", str(bursty_video), "-n", "1", "-d", "20", "-f", "crop", "-o", str(out)]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert load_moments(out / "moments.json").framing is Framing.CROP
+
+    def test_ai_needs_transcript(self, bursty_video: Path) -> None:
+        result = CliRunner().invoke(app, ["auto", "--ai", "--no-transcript", str(bursty_video)])
+
+        assert result.exit_code == 2

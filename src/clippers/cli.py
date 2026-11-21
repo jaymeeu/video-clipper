@@ -5,6 +5,7 @@ raises exceptions and emits log records; this layer decides how users see them.
 """
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, NoReturn
 
@@ -21,10 +22,15 @@ from clippers.batch import run_batch
 from clippers.detect import detect_moments
 from clippers.framing import Framing
 from clippers.ingest import DEFAULT_DOWNLOAD_DIR, DownloadError, download, resolve_source
-from clippers.moments import load_moments, save_moments
+from clippers.moments import MomentsFile, load_moments, save_moments
 from clippers.pipeline import CaptionOptions, make_clip
 from clippers.timecode import format_timestamp, parse_timestamp
-from clippers.transcribe import DEFAULT_MODEL, load_cached_transcript, transcribe_cached
+from clippers.transcribe import (
+    DEFAULT_MODEL,
+    Transcript,
+    load_cached_transcript,
+    transcribe_cached,
+)
 from clippers.video import FFmpegError
 
 logger = logging.getLogger(__name__)
@@ -157,85 +163,55 @@ def cut(
     typer.echo(result.path)  # stdout: just the path, so scripts can capture it
 
 
-@app.command()
-def batch(
-    moments_file: Annotated[Path, typer.Argument(help="JSON file listing the moments to clip.")],
-    output_dir: Annotated[
-        Path | None,
-        typer.Option("--output-dir", "-o", help="Default: output/<moments file name>/"),
-    ] = None,
-    model: ModelOption = DEFAULT_MODEL,
-    language: LanguageOption = None,
-) -> None:
-    """Make one clip per moment in MOMENTS_FILE. Failed clips don't stop the others."""
-    try:
-        plan = load_moments(moments_file)
-        source = resolve_source(plan.source, base_dir=moments_file.parent)
-    except (DownloadError, ValueError) as e:
-        _fail(str(e))
-
-    out_dir = output_dir or Path("output") / moments_file.stem
-    caption_options = CaptionOptions(model=model, language=language) if plan.captions else None
-    transcript = None
-    if caption_options is not None:
-        # Reuse the whole-video transcript from `detect` if it's cached (same model and
-        # language); otherwise each clip is transcribed on its own, as before.
-        transcript = load_cached_transcript(source, model=model, language=language)
-        if transcript is not None:
-            logger.info("captions come from the cached transcript: no re-transcribing")
-    outcomes = run_batch(plan, source, out_dir, captions=caption_options, transcript=transcript)
-
-    for outcome in outcomes:
-        if outcome.path is not None:
-            typer.echo(outcome.path)  # stdout: one path per finished clip
-
-    failed = [o for o in outcomes if not o.ok]
-    typer.echo(f"{len(outcomes) - len(failed)}/{len(outcomes)} clips made in {out_dir}", err=True)
-    if failed:
-        for outcome in failed:
-            typer.secho(f"  #{outcome.number} failed: {outcome.error}", fg="red", err=True)
-        raise typer.Exit(code=1)
+# Options shared by detect and auto.
+CountOption = Annotated[
+    int, typer.Option("--count", "-n", min=1, max=50, help="Maximum moments to pick.")
+]
+DurationOption = Annotated[
+    int, typer.Option("--duration", "-d", min=5, max=600, help="Typical clip length (s).")
+]
+TranscriptOption = Annotated[
+    bool,
+    typer.Option(
+        "--transcript/--no-transcript",
+        help="Also score speech and reactions (transcribes once, then cached).",
+    ),
+]
+AIOption = Annotated[
+    bool,
+    typer.Option(
+        "--ai/--no-ai",
+        help="Also ask an AI model which moments are clip-worthy. Sends the transcript "
+        "to OpenAI and costs a few cents per video (cached afterwards). Needs OPENAI_API_KEY.",
+    ),
+]
+AIModelOption = Annotated[
+    str | None,
+    typer.Option(
+        "--ai-model", help="OpenAI model for --ai. Default: $CLIPPERS_AI_MODEL or gpt-5-mini."
+    ),
+]
 
 
-@app.command()
-def detect(
-    video: Annotated[str, typer.Argument(help="Source video: a local file or an http(s) URL.")],
-    count: Annotated[
-        int, typer.Option("--count", "-n", min=1, max=50, help="Maximum moments to pick.")
-    ] = 5,
-    duration: Annotated[
-        int, typer.Option("--duration", "-d", min=5, max=600, help="Clip length (s).")
-    ] = 30,
-    output: Annotated[
-        Path | None,
-        typer.Option("--output", "-o", help="Moments file. Default: output/<video>.moments.json"),
-    ] = None,
-    use_transcript: Annotated[
-        bool,
-        typer.Option(
-            "--transcript/--no-transcript",
-            help="Also score speech and reactions (transcribes once, then cached).",
-        ),
-    ] = True,
-    model: ModelOption = DEFAULT_MODEL,
-    language: LanguageOption = None,
-    use_ai: Annotated[
-        bool,
-        typer.Option(
-            "--ai/--no-ai",
-            help="Also ask an AI model which moments are clip-worthy. Sends the transcript "
-            "to OpenAI and costs a few cents per video (cached afterwards). "
-            "Needs OPENAI_API_KEY.",
-        ),
-    ] = False,
-    ai_model: Annotated[
-        str | None,
-        typer.Option(
-            "--ai-model", help="OpenAI model for --ai. Default: $CLIPPERS_AI_MODEL or gpt-5-mini."
-        ),
-    ] = None,
-) -> None:
-    """Find the moments in VIDEO that stand out most and write them to a moments file."""
+@dataclass(frozen=True, slots=True)
+class _Detection:
+    source: Path  # the local video file (downloaded if VIDEO was a URL)
+    plan: MomentsFile
+    transcript: Transcript | None
+
+
+def _find_moments(
+    video: str,
+    *,
+    count: int,
+    duration: int,
+    use_transcript: bool,
+    model: str,
+    language: str | None,
+    use_ai: bool,
+    ai_model: str | None,
+) -> _Detection:
+    """Everything `detect` and `auto` share: fetch, transcribe, ask the AI, score."""
     if use_ai and not use_transcript:
         raise typer.BadParameter(
             "--ai reads the transcript, so it can't be used with --no-transcript"
@@ -262,16 +238,147 @@ def detect(
         _fail(str(e))
     except (AIScoringError, DownloadError, FileNotFoundError, ValueError) as e:
         _fail(str(e))
+    return _Detection(source=source, plan=plan, transcript=transcript)
 
-    path = save_moments(plan, output or Path("output") / f"{source.stem}.moments.json")
+
+def _print_picks(plan: MomentsFile) -> None:
     for rank, moment in enumerate(plan.moments, start=1):
         typer.echo(
-            f"  #{rank}  {format_timestamp(moment.start):>7}  score {moment.score:4.2f}  "
+            f"  #{rank}  {format_timestamp(moment.start):>7}  score {moment.score or 0:4.2f}  "
             f"{moment.reason}",
             err=True,
         )
+
+
+def _render(
+    plan: MomentsFile,
+    source: Path,
+    out_dir: Path,
+    *,
+    captions: CaptionOptions | None,
+    transcript: Transcript | None,
+) -> None:
+    """Everything `batch` and `auto` share: make the clips, report, exit 1 on any failure."""
+    outcomes = run_batch(plan, source, out_dir, captions=captions, transcript=transcript)
+
+    for outcome in outcomes:
+        if outcome.path is not None:
+            typer.echo(outcome.path)  # stdout: one path per finished clip
+
+    failed = [o for o in outcomes if not o.ok]
+    typer.echo(f"{len(outcomes) - len(failed)}/{len(outcomes)} clips made in {out_dir}", err=True)
+    if failed:
+        for outcome in failed:
+            typer.secho(f"  #{outcome.number} failed: {outcome.error}", fg="red", err=True)
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def batch(
+    moments_file: Annotated[Path, typer.Argument(help="JSON file listing the moments to clip.")],
+    output_dir: Annotated[
+        Path | None,
+        typer.Option("--output-dir", "-o", help="Default: output/<moments file name>/"),
+    ] = None,
+    model: ModelOption = DEFAULT_MODEL,
+    language: LanguageOption = None,
+) -> None:
+    """Make one clip per moment in MOMENTS_FILE. Failed clips don't stop the others."""
+    try:
+        plan = load_moments(moments_file)
+        source = resolve_source(plan.source, base_dir=moments_file.parent)
+    except (DownloadError, ValueError) as e:
+        _fail(str(e))
+
+    caption_options = CaptionOptions(model=model, language=language) if plan.captions else None
+    transcript = None
+    if caption_options is not None:
+        # Reuse the whole-video transcript from `detect` if it's cached (same model and
+        # language); otherwise each clip is transcribed on its own.
+        transcript = load_cached_transcript(source, model=model, language=language)
+        if transcript is not None:
+            logger.info("captions come from the cached transcript: no re-transcribing")
+    out_dir = output_dir or Path("output") / moments_file.stem
+    _render(plan, source, out_dir, captions=caption_options, transcript=transcript)
+
+
+@app.command()
+def detect(
+    video: Annotated[str, typer.Argument(help="Source video: a local file or an http(s) URL.")],
+    count: CountOption = 5,
+    duration: DurationOption = 30,
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", "-o", help="Moments file. Default: output/<video>.moments.json"),
+    ] = None,
+    use_transcript: TranscriptOption = True,
+    model: ModelOption = DEFAULT_MODEL,
+    language: LanguageOption = None,
+    use_ai: AIOption = False,
+    ai_model: AIModelOption = None,
+) -> None:
+    """Find the moments in VIDEO that stand out most and write them to a moments file."""
+    found = _find_moments(
+        video,
+        count=count,
+        duration=duration,
+        use_transcript=use_transcript,
+        model=model,
+        language=language,
+        use_ai=use_ai,
+        ai_model=ai_model,
+    )
+    path = save_moments(found.plan, output or Path("output") / f"{found.source.stem}.moments.json")
+    _print_picks(found.plan)
     typer.echo(f"next: clippers batch {path}", err=True)
     typer.echo(path)  # stdout: just the path, so `clippers batch $(clippers detect ...)` works
+
+
+@app.command()
+def auto(
+    video: Annotated[str, typer.Argument(help="Source video: a local file or an http(s) URL.")],
+    count: CountOption = 5,
+    duration: DurationOption = 30,
+    output_dir: Annotated[
+        Path | None,
+        typer.Option("--output-dir", "-o", help="Default: output/<video name>/"),
+    ] = None,
+    framing: Annotated[
+        Framing,
+        typer.Option("--framing", "-f", case_sensitive=False, help="blur, crop or original."),
+    ] = Framing.BLUR,
+    captions: Annotated[
+        bool, typer.Option("--captions/--no-captions", help="Burn in captions.")
+    ] = True,
+    use_transcript: TranscriptOption = True,
+    model: ModelOption = DEFAULT_MODEL,
+    language: LanguageOption = None,
+    use_ai: AIOption = False,
+    ai_model: AIModelOption = None,
+) -> None:
+    """Find the best moments in VIDEO and turn them into clips, in one go.
+
+    Same as `detect` then `batch`. The chosen moments are also saved as moments.json in
+    the output folder, so you can tweak them and re-render with `clippers batch`.
+    """
+    found = _find_moments(
+        video,
+        count=count,
+        duration=duration,
+        use_transcript=use_transcript,
+        model=model,
+        language=language,
+        use_ai=use_ai,
+        ai_model=ai_model,
+    )
+    plan = found.plan.model_copy(update={"framing": framing, "captions": captions})
+    out_dir = output_dir or Path("output") / found.source.stem
+    moments_path = save_moments(plan, out_dir / "moments.json")
+    _print_picks(plan)
+    logger.info("moments saved to %s (edit it and run `clippers batch` to re-render)", moments_path)
+
+    caption_options = CaptionOptions(model=model, language=language) if captions else None
+    _render(plan, found.source, out_dir, captions=caption_options, transcript=found.transcript)
 
 
 def _fail(message: str) -> NoReturn:
