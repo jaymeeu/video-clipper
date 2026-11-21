@@ -143,3 +143,21 @@ def test_transcribe_real_speech(tmp_path: Path) -> None:
     starts = [w.start for w in transcript.words]
     assert starts == sorted(starts)
     assert all(w.end >= w.start for w in transcript.words)
+
+
+@requires_ffmpeg
+@requires_libass
+def test_make_clip_with_captions_returns_path_as_given(
+    sample_video: Path,
+    tmp_path: Path,
+    fake_transcribe: list[Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)  # so the relative path below lands in tmp_path
+
+    result = make_clip(
+        sample_video, Path("out/clip.mp4"), start=0, duration=1, captions=CaptionOptions()
+    )
+
+    assert result.path == Path("out/clip.mp4")  # not silently made absolute
+    assert (tmp_path / "out" / "clip.mp4").is_file()

@@ -85,6 +85,8 @@ def cut_clip(
 
     filters = [framing_filter(framing)]
     cwd = None
+    # What ffmpeg is given. Kept separate from `output` so we return the caller's own path.
+    ffmpeg_source, ffmpeg_output = source, output
     if subtitles is not None:
         if framing is Framing.ORIGINAL:
             raise ValueError("burned-in captions need vertical framing (crop or blur)")
@@ -96,7 +98,8 @@ def cut_clip(
         # Running ffmpeg *in* the subtitles' folder means we only ever pass a plain name.
         filters.append(f"subtitles=filename={subtitles.name}")
         cwd = subtitles.parent
-        source, output = source.resolve(), output.resolve()
+        # ffmpeg will run in another folder, so relative paths must become absolute.
+        ffmpeg_source, ffmpeg_output = source.resolve(), output.resolve()
 
     video_filter = ",".join(f for f in filters if f)
     filter_args = ["-vf", video_filter] if video_filter else []
@@ -105,14 +108,14 @@ def cut_clip(
     _run_ffmpeg(
         [
             "-ss", f"{start:.3f}",          # seek BEFORE -i: fast input seeking
-            "-i", str(source),
+            "-i", str(ffmpeg_source),
             "-t", f"{duration:.3f}",
             *filter_args,
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
             "-pix_fmt", "yuv420p",          # 8-bit 4:2:0: the only format every phone plays
             "-c:a", "aac", "-b:a", "128k",
             "-movflags", "+faststart",      # moov atom up front so clips stream instantly
-            str(output),
+            str(ffmpeg_output),
         ],
         cwd=cwd,
     )  # fmt: skip

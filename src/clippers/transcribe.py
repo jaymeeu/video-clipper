@@ -44,13 +44,24 @@ class Transcript(BaseModel):
 
 @lru_cache(maxsize=2)
 def _load_model(name: str) -> "WhisperModel":
-    """Load (and on first use, download) a Whisper model. Cached: loading takes seconds."""
-    # Deferred import keeps `clippers --help` instant.
-    from faster_whisper import WhisperModel  # pyright: ignore[reportMissingTypeStubs]
+    """Load a Whisper model: from the local cache if present, otherwise download it once.
 
-    logger.info("loading whisper model %r (first run downloads it)", name)
+    Trying the cache first means no network request on every run, so clipping a local
+    file works offline. Cached per process: loading takes seconds.
+    """
+    # Deferred imports keep `clippers --help` instant.
+    from faster_whisper import WhisperModel  # pyright: ignore[reportMissingTypeStubs]
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
     # int8 on CPU: ~4x less memory than float32 and much faster, for a tiny accuracy cost.
-    return WhisperModel(name, device="cpu", compute_type="int8")
+    try:
+        model = WhisperModel(name, device="cpu", compute_type="int8", local_files_only=True)
+    except LocalEntryNotFoundError:
+        # Must come before any generic FileNotFoundError handling: it's a subclass of it.
+        logger.info("downloading whisper model %r (one time only)", name)
+        model = WhisperModel(name, device="cpu", compute_type="int8")
+    logger.info("loaded whisper model %r", name)
+    return model
 
 
 def transcribe(

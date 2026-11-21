@@ -47,11 +47,21 @@ def main(
     ] = False,
 ) -> None:
     """Global options, applied before any subcommand runs."""
+    configure_logging(verbose=verbose)
+
+
+def configure_logging(*, verbose: bool) -> None:
+    """Normal: our own INFO messages, plus only warnings from libraries. Verbose: everything.
+
+    Loggers form a tree by dotted name, so the "clippers" level covers clippers.video,
+    clippers.transcribe, etc., while httpx/faster_whisper/... inherit the root's level.
+    """
     logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO,
+        level=logging.DEBUG if verbose else logging.WARNING,
         format="%(levelname)s %(name)s: %(message)s",
         force=True,  # replace any handlers left over from a previous config
     )
+    logging.getLogger("clippers").setLevel(logging.DEBUG if verbose else logging.INFO)
 
 
 @app.command("download")

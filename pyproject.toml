@@ -12,6 +12,7 @@ dependencies = [
     # Drop this cap once a faster-whisper release supports PyAV 19 (test: pytest -m slow).
     "av<19",
     "faster-whisper>=1.2.1",
+    "huggingface-hub>=2.4.0",
     "pydantic>=2.14.3",
     "typer>=0.29.2",
     "yt-dlp[default]>=2026.10.26",

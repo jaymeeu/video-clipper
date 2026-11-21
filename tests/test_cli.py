@@ -1,9 +1,11 @@
+import logging
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
-from clippers.cli import app
+from clippers.cli import app, configure_logging
 from tests.media import probe_duration, requires_ffmpeg
 
 runner = CliRunner()
@@ -65,3 +67,32 @@ def test_no_args_shows_help() -> None:
     result = runner.invoke(app, [])
 
     assert "cut" in result.output
+
+
+@pytest.fixture
+def restore_logging() -> Iterator[None]:
+    """configure_logging changes global state; put it back so other tests aren't affected."""
+    root, ours = logging.getLogger(), logging.getLogger("clippers")
+    saved = (root.level, list(root.handlers), ours.level)
+    yield
+    root.setLevel(saved[0])
+    root.handlers[:] = saved[1]
+    ours.setLevel(saved[2])
+
+
+@pytest.mark.usefixtures("restore_logging")
+def test_default_logging_shows_our_info_but_only_library_warnings() -> None:
+    configure_logging(verbose=False)
+
+    assert logging.getLogger("clippers.video").isEnabledFor(logging.INFO)
+    assert not logging.getLogger("clippers.video").isEnabledFor(logging.DEBUG)
+    assert not logging.getLogger("faster_whisper").isEnabledFor(logging.INFO)
+    assert logging.getLogger("faster_whisper").isEnabledFor(logging.WARNING)
+
+
+@pytest.mark.usefixtures("restore_logging")
+def test_verbose_logging_shows_everything() -> None:
+    configure_logging(verbose=True)
+
+    assert logging.getLogger("clippers.video").isEnabledFor(logging.DEBUG)
+    assert logging.getLogger("httpx").isEnabledFor(logging.DEBUG)
