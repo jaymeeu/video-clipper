@@ -10,8 +10,10 @@ from typing import Annotated, NoReturn
 
 import typer
 
+from clippers.batch import run_batch
 from clippers.framing import Framing
-from clippers.ingest import DEFAULT_DOWNLOAD_DIR, DownloadError, download, is_url
+from clippers.ingest import DEFAULT_DOWNLOAD_DIR, DownloadError, download, resolve_source
+from clippers.moments import load_moments
 from clippers.pipeline import CaptionOptions, make_clip
 from clippers.timecode import parse_timestamp
 from clippers.transcribe import DEFAULT_MODEL
@@ -24,6 +26,18 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+
+# Options shared by several commands: define once, reuse as a type.
+ModelOption = Annotated[
+    str,
+    typer.Option(
+        "--model", "-m", help="Whisper model: tiny, base, small, medium, large-v3, turbo."
+    ),
+]
+LanguageOption = Annotated[
+    str | None,
+    typer.Option("--language", "-l", help="Spoken language code, e.g. en. Default: detect."),
+]
 
 
 @app.callback()
@@ -77,16 +91,8 @@ def cut(
     captions: Annotated[
         bool, typer.Option("--captions/--no-captions", help="Transcribe and burn in captions.")
     ] = True,
-    model: Annotated[
-        str,
-        typer.Option(
-            "--model", "-m", help="Whisper model: tiny, base, small, medium, large-v3, turbo."
-        ),
-    ] = DEFAULT_MODEL,
-    language: Annotated[
-        str | None,
-        typer.Option("--language", "-l", help="Spoken language code, e.g. en. Default: detect."),
-    ] = None,
+    model: ModelOption = DEFAULT_MODEL,
+    language: LanguageOption = None,
 ) -> None:
     """Cut a single clip from VIDEO (file or URL) at a given timestamp."""
     try:
@@ -96,7 +102,7 @@ def cut(
 
     caption_options = CaptionOptions(model=model, language=language) if captions else None
     try:
-        source = download(video) if is_url(video) else Path(video)
+        source = resolve_source(video)
         result = make_clip(
             source,
             output,
@@ -116,7 +122,40 @@ def cut(
     typer.echo(result.path)  # stdout: just the path, so scripts can capture it
 
 
+@app.command()
+def batch(
+    moments_file: Annotated[Path, typer.Argument(help="JSON file listing the moments to clip.")],
+    output_dir: Annotated[
+        Path | None,
+        typer.Option("--output-dir", "-o", help="Default: output/<moments file name>/"),
+    ] = None,
+    model: ModelOption = DEFAULT_MODEL,
+    language: LanguageOption = None,
+) -> None:
+    """Make one clip per moment in MOMENTS_FILE. Failed clips don't stop the others."""
+    try:
+        plan = load_moments(moments_file)
+        source = resolve_source(plan.source, base_dir=moments_file.parent)
+    except (DownloadError, ValueError) as e:
+        _fail(str(e))
+
+    out_dir = output_dir or Path("output") / moments_file.stem
+    caption_options = CaptionOptions(model=model, language=language) if plan.captions else None
+    outcomes = run_batch(plan, source, out_dir, captions=caption_options)
+
+    for outcome in outcomes:
+        if outcome.path is not None:
+            typer.echo(outcome.path)  # stdout: one path per finished clip
+
+    failed = [o for o in outcomes if not o.ok]
+    typer.echo(f"{len(outcomes) - len(failed)}/{len(outcomes)} clips made in {out_dir}", err=True)
+    if failed:
+        for outcome in failed:
+            typer.secho(f"  #{outcome.number} failed: {outcome.error}", fg="red", err=True)
+        raise typer.Exit(code=1)
+
+
 def _fail(message: str) -> NoReturn:
-    """Print a one-line error to stderr and exit 1. Users never see a traceback."""
+    """Print an error to stderr and exit 1. Users never see a traceback."""
     typer.secho(f"error: {message}", fg=typer.colors.RED, err=True)
     raise typer.Exit(code=1)

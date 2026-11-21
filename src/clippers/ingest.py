@@ -63,6 +63,19 @@ def is_url(value: str) -> bool:
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
+def resolve_source(
+    source: str, *, base_dir: Path = Path(), dest_dir: Path = DEFAULT_DOWNLOAD_DIR
+) -> Path:
+    """Turn a user-supplied source into a local file: download URLs, resolve paths.
+
+    Relative paths are resolved against `base_dir` (e.g. the folder of a moments file).
+    """
+    if is_url(source):
+        return download(source, dest_dir)
+    # Joining onto an absolute path ignores base_dir: Path("a") / "/x/y.mp4" == Path("/x/y.mp4")
+    return base_dir / Path(source).expanduser()
+
+
 def download(url: str, dest_dir: Path = DEFAULT_DOWNLOAD_DIR) -> Path:
     """Download the video at `url` into `dest_dir` and return the local file path.
 

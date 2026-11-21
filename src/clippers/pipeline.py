@@ -8,7 +8,7 @@ from pathlib import Path
 from clippers.captions import write_ass
 from clippers.framing import Framing
 from clippers.transcribe import DEFAULT_MODEL, Transcript, transcribe
-from clippers.video import cut_clip, extract_audio
+from clippers.video import cut_clip, extract_audio, probe_duration
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,12 @@ def make_clip(
     framing: Framing = Framing.BLUR,
     captions: CaptionOptions | None = None,
 ) -> ClipResult:
-    """Cut one clip, optionally transcribing it and burning in word-highlighted captions."""
+    """Cut one clip, optionally transcribing it and burning in word-highlighted captions.
+
+    A clip that runs past the end of the video is shortened (with a warning); one that
+    starts past the end raises ValueError. ffmpeg itself would "succeed" with an empty file.
+    """
+    duration = _fit_to_video(source, start, duration)
     if captions is None:
         path = cut_clip(source, output, start=start, duration=duration, framing=framing)
         return ClipResult(path=path, transcript=None)
@@ -54,3 +59,22 @@ def make_clip(
             source, output, start=start, duration=duration, framing=framing, subtitles=subtitles
         )
     return ClipResult(path=path, transcript=transcript)
+
+
+_MIN_CLIP = 0.5  # seconds; anything shorter isn't a usable clip
+
+
+def _fit_to_video(source: Path, start: float, duration: float) -> float:
+    length = probe_duration(source)
+    if length is None:
+        return duration  # unknown length: trust the caller
+    if start > length - _MIN_CLIP:
+        raise ValueError(f"start {start:.1f}s is past the end of the video ({length:.1f}s long)")
+    if start + duration > length:
+        trimmed = length - start
+        logger.warning(
+            "clip at %.1fs runs past the end of the video; shortened %.1fs -> %.1fs",
+            start, duration, trimmed,
+        )  # fmt: skip
+        return trimmed
+    return duration

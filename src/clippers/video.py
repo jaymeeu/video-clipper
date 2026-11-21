@@ -31,6 +31,24 @@ def _run_ffmpeg(args: list[str], *, cwd: Path | None = None) -> None:
         raise FFmpegError(cmd, result.stderr)
 
 
+def probe_duration(source: Path) -> float | None:
+    """Length of `source` in seconds, or None if the container doesn't record one.
+
+    (Some live-stream recordings have no duration in their header until they're remuxed.)
+    """
+    if not source.is_file():
+        raise FileNotFoundError(f"source video not found: {source}")
+    cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
+           str(source)]  # fmt: skip
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise FFmpegError(cmd, result.stderr)
+    try:
+        return float(result.stdout.strip())
+    except ValueError:
+        return None  # ffprobe printed "N/A"
+
+
 def _validate_range(source: Path, start: float, duration: float) -> None:
     if not source.is_file():
         raise FileNotFoundError(f"source video not found: {source}")
