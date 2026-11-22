@@ -9,8 +9,12 @@ excited talk, laughter, hype words in English and Nigerian Pidgin, and optionall
 model's judgement), cuts them at sentence boundaries, reframes them for phones, and burns in
 TikTok-style captions where each word lights up as it's spoken.
 
-Use it from the **command line**, or run it as an **HTTP service** that another backend
-(for example a Node.js app) calls: submit a video URL, poll the job, download the clips.
+Use it three ways:
+- **Web app**: the team pastes a link, watches progress, previews the clips and
+  downloads the good ones (password-protected).
+- **Command line**: `clippers auto VIDEO` on your own machine.
+- **HTTP API**: another backend (for example a Node.js app) submits a URL, polls the job
+  and downloads the clips.
 
 ---
 
@@ -22,14 +26,15 @@ Use it from the **command line**, or run it as an **HTTP service** that another 
 4. [Command reference](#command-reference)
 5. [The moments file](#the-moments-file)
 6. [Settings (.env)](#settings-env)
-7. [The HTTP service](#the-http-service)
-8. [Calling it from Node.js](#calling-it-from-nodejs)
-9. [Running with Docker](#running-with-docker)
-10. [Deploying to a server (DigitalOcean)](#deploying-to-a-server-digitalocean)
-11. [Project layout](#project-layout)
-12. [Development](#development)
-13. [Troubleshooting](#troubleshooting)
-14. [Limitations and roadmap](#limitations-and-roadmap)
+7. [The web app](#the-web-app)
+8. [The HTTP service](#the-http-service)
+9. [Calling it from Node.js](#calling-it-from-nodejs)
+10. [Running with Docker](#running-with-docker)
+11. [Deploying to a server (DigitalOcean)](#deploying-to-a-server-digitalocean)
+12. [Project layout](#project-layout)
+13. [Development](#development)
+14. [Troubleshooting](#troubleshooting)
+15. [Limitations and roadmap](#limitations-and-roadmap)
 
 ---
 
@@ -238,10 +243,60 @@ be committed. Real environment variables take precedence over the file.
 | `CLIPPERS_DATA_DIR` | `data` | HTTP service | job outputs and downloads (`/data` in Docker) |
 | `CLIPPERS_RETENTION_DAYS` | `7` | HTTP service | how long jobs, downloads and caches are kept |
 | `CLIPPERS_CACHE_DIR` | `~/.cache/clippers` | everything | cached transcripts and AI answers |
+| `CLIPPERS_WEB_PASSWORD` | none (**required**) | web app | the team's login password; the web container won't start without it |
+| `CLIPPERS_WEB_USER` | `team` | web app | the team's login user name |
+| `CLIPPERS_API_URL` | `http://127.0.0.1:8000` | web dev server | where `npm run dev` sends `/api` requests |
 
 **Cost of AI scoring:** one request per video (long streams are split into a few), well
 under a cent per video with `gpt-5-mini` in our tests. Answers are cached, so re-running
 on the same video costs nothing.
+
+## The web app
+
+A React app for the team, in [`web/`](web/). Three screens:
+
+| Screen | What you do there |
+|---|---|
+| **Jobs** (`/`) | every video sent for clipping, newest first, with live status |
+| **New clips** (`/new`) | paste a link; pick how many clips, length, framing, language, captions, AI |
+| **Job** (`/jobs/:id`) | live progress through each step, then the clips: play them inline (one at a time), see *why* each was picked, download |
+
+Run it with everything else:
+
+```bash
+# in .env: CLIPPERS_WEB_PASSWORD=<choose one>   (CLIPPERS_WEB_USER defaults to "team")
+docker compose up -d --build
+open http://127.0.0.1:8080        # log in with team / your password
+```
+
+How it's put together:
+
+```
+browser ──▶ web container (Caddy) ──/api/*──▶ API ──▶ worker
+            • asks for the team login
+            • serves the built React app
+            • adds X-API-Key itself: the key never reaches the browser
+```
+
+- **Stack:** Vite, React 19, TypeScript, TanStack Query (polling that stops when jobs
+  finish), React Router, Tailwind CSS.
+- **Typed API calls:** TypeScript types are generated from the API's OpenAPI schema
+  (`web/openapi.json`). After changing the API's models, run `npm run gen:api` in `web/`;
+  a Python test fails if you forget.
+- **No API key in the browser:** the app only calls `/api/...` on its own address; Caddy
+  (production) or Vite (development) adds the key on the way to the API.
+
+### Working on the web app
+
+```bash
+docker compose up -d redis api worker   # or run the API/worker with uv (see Development)
+cd web
+npm install
+npm run dev            # http://localhost:5173, hot reload; /api goes to http://127.0.0.1:8000
+npm test               # Vitest + Testing Library (fake API, no backend needed)
+npm run typecheck && npm run build
+npm run gen:api        # after changing the API's models
+```
 
 ## The HTTP service
 
@@ -352,12 +407,13 @@ export async function createClips(videoUrl) {
 
 ## Running with Docker
 
-The easiest way to run the whole service (Redis + API + worker) on any machine:
+The easiest way to run the whole service (Redis + API + worker + web app) on any machine:
 
 ```bash
-cp .env.example .env          # set CLIPPERS_API_KEY (and OPENAI_API_KEY for AI)
+cp .env.example .env          # set CLIPPERS_WEB_PASSWORD, CLIPPERS_API_KEY (+ OPENAI_API_KEY for AI)
 docker compose up -d --build  # build and start everything
-open http://127.0.0.1:8000/docs
+open http://127.0.0.1:8080        # the web app (team login)
+open http://127.0.0.1:8000/docs   # the API's interactive docs
 ```
 
 | Command | |
@@ -374,8 +430,8 @@ Arial-compatible font for captions. It runs as a non-root user, and all state (c
 downloads, caches, Whisper models) lives in the `data` volume at `/data`. Secrets come
 from `.env` when the containers start and are never baked into the image.
 
-The API and Redis are bound to `127.0.0.1`, so they aren't reachable from other machines
-until you deliberately put something in front (next section).
+The web app, API and Redis are bound to `127.0.0.1`, so they aren't reachable from other
+machines until you deliberately put something in front (next section).
 
 ## Deploying to a server (DigitalOcean)
 
@@ -403,9 +459,11 @@ curl -fsSL https://get.docker.com | sh            # Docker Engine + compose plug
 git clone https://github.com/jaymeeu/video-clipper.git /opt/clippers
 cd /opt/clippers
 cp .env.example .env
-nano .env       # set CLIPPERS_API_KEY (openssl rand -hex 32) and OPENAI_API_KEY if needed
+nano .env       # set CLIPPERS_WEB_PASSWORD, CLIPPERS_API_KEY (openssl rand -hex 32),
+                # and OPENAI_API_KEY if you want AI picks
 docker compose up -d --build
 curl http://127.0.0.1:8000/health                 # → {"status":"ok"}
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8080   # → 401 (login required)
 ```
 
 ### 3. Firewall: only SSH and HTTPS in
@@ -416,8 +474,8 @@ ufw allow 80,443/tcp
 ufw enable
 ```
 
-(The API is published on `127.0.0.1` only, so it isn't exposed even though Docker
-bypasses `ufw` for published ports.)
+(The web app and API are published on `127.0.0.1` only, so they aren't exposed even
+though Docker bypasses `ufw` for published ports.)
 
 ### 4. Block the worker from private networks
 
@@ -443,28 +501,26 @@ curl -s http://127.0.0.1:8000/health
 (`172.16.0.0/12` is left open on purpose: Docker's own networks use it, and the worker
 needs Redis.)
 
-### 5. Expose the API
+### 5. Give the team HTTPS access to the web app
 
-**Option A, private network (best if your backend runs in the same cloud).** Don't
-expose the API publicly at all. Change the API's port in `compose.yaml` from
-`"127.0.0.1:8000:8000"` to `"<droplet-private-ip>:8000:8000"`, run
-`docker compose up -d`, and have your backend call `http://<droplet-private-ip>:8000`.
-
-**Option B, public HTTPS** with [Caddy](https://caddyserver.com) (automatic
-certificates). Point a domain (e.g. `clipper.example.com`) at the Droplet, then:
+Point a domain (e.g. `clips.example.com`) at the Droplet and put
+[Caddy](https://caddyserver.com) (automatic HTTPS certificates) in front of the web app:
 
 ```bash
 apt install -y caddy
-cat > /etc/caddy/Caddyfile <<'EOF'
-clipper.example.com {
-    reverse_proxy 127.0.0.1:8000
-}
-EOF
+printf 'clips.example.com {\n    reverse_proxy 127.0.0.1:8080\n}\n' > /etc/caddy/Caddyfile
 systemctl reload caddy
-curl https://clipper.example.com/health
 ```
 
-Either way, **keep `CLIPPERS_API_KEY` set**.
+Open `https://clips.example.com` and log in with `CLIPPERS_WEB_USER` / `CLIPPERS_WEB_PASSWORD`.
+The API is reachable *through* the web app (at `/api`, behind the same login), so it doesn't
+need its own public address.
+
+**If another backend should call the API directly** (e.g. your Node.js app): best over the
+private network. Change the API's port in `compose.yaml` from `"127.0.0.1:8000:8000"` to
+`"<droplet-private-ip>:8000:8000"`, run `docker compose up -d`, and call
+`http://<droplet-private-ip>:8000` with the `X-API-Key` header. **Keep `CLIPPERS_API_KEY`
+set.**
 
 ### 6. Day-to-day
 
@@ -504,6 +560,11 @@ src/clippers/
   netguard.py     refusing URLs that point into private networks
   cache.py        small on-disk JSON cache (atomic writes)
 tests/            pytest suite (no network, no real API keys needed)
+web/              the team web app (React + TypeScript)
+  src/pages/        Jobs, New clips, Job screens
+  src/components/   clip card, progress steps, shared UI
+  src/api/          typed API client (schema.d.ts is generated from openapi.json)
+  Caddyfile         login + /api proxy for the production container
 Dockerfile, compose.yaml, .env.example
 ```
 
@@ -544,6 +605,9 @@ uv run pytest -m slow        # also runs real Whisper on synthesized speech (mac
 | First run is slow | the Whisper model (~480 MB) downloads once; later runs use the cache |
 | `uv sync` fails on an Intel Mac | `pyproject.toml` pins versions that still ship Intel-Mac wheels (`[tool.uv]` section) |
 | API returns `401` | send `X-API-Key` matching `CLIPPERS_API_KEY` |
+| Web container exits: *Set CLIPPERS_WEB_PASSWORD* | add `CLIPPERS_WEB_PASSWORD=...` to `.env`, then `docker compose up -d` |
+| Web login keeps failing | a `$` in the password gets mangled by docker compose: avoid it or single-quote the value |
+| Web app shows *"The API rejected our API key"* | `CLIPPERS_API_KEY` must be the same for the `api` and `web` services (both read `.env`) |
 | Job `422`: *points to a private or reserved network address* | the URL resolves to localhost/private network; use a public URL |
 
 ## Limitations and roadmap

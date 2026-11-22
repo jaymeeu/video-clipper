@@ -1,5 +1,6 @@
-# The whole clippers service: Redis + API + worker.
-#   docker compose up -d --build        start everything (API on http://127.0.0.1:8000)
+# The whole clippers service: Redis + API + worker + web app.
+#   docker compose up -d --build        start everything: web app on http://127.0.0.1:8080
+#                                        (team login), API on http://127.0.0.1:8000
 #   docker compose up -d redis          just Redis, to run the API/worker with uv locally
 #   docker compose logs -f worker       watch jobs being processed
 #   docker compose up -d --scale worker=3   more videos in parallel (if the machine has cores)
@@ -43,6 +44,22 @@ services:
       - api  # so `up --build` builds the image (via api) before starting the worker
     healthcheck:
       disable: true  # the image's healthcheck is for the API
+    restart: unless-stopped
+
+  web:
+    build: ./web
+    image: clippers-web:local
+    # The team's web app: login (CLIPPERS_WEB_PASSWORD) + the API behind /api, with the
+    # API key added server-side. Put HTTPS in front of this port on a server.
+    ports:
+      - "127.0.0.1:8080:80"
+    environment:
+      CLIPPERS_API_UPSTREAM: api:8000
+    env_file:  # CLIPPERS_WEB_PASSWORD (required), CLIPPERS_WEB_USER, CLIPPERS_API_KEY
+      - path: .env
+        required: false
+    depends_on:
+      - api
     restart: unless-stopped
 
 volumes:
