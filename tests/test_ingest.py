@@ -1,4 +1,5 @@
 import functools
+import os
 import shutil
 import socket
 import sys
@@ -80,12 +81,15 @@ def test_download_direct_link(video_server: str, tmp_path: Path) -> None:
 def test_download_same_url_twice_reuses_file(video_server: str, tmp_path: Path) -> None:
     url = f"{video_server}/sample.mp4"
     first = download(url, tmp_path)
-    first_mtime = first.stat().st_mtime_ns
+    before = first.stat()
+    os.utime(first, (before.st_atime - 86_400, before.st_mtime - 86_400))  # "a day old"
 
     second = download(url, tmp_path)
 
+    after = second.stat()
     assert second == first
-    assert second.stat().st_mtime_ns == first_mtime  # not rewritten
+    assert after.st_ino == before.st_ino  # same file on disk: not downloaded again
+    assert after.st_mtime > before.st_mtime - 86_400  # but marked as just used (cleanup)
 
 
 def test_download_404_raises(video_server: str, tmp_path: Path) -> None:

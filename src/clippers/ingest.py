@@ -118,5 +118,8 @@ def download(url: str, dest_dir: Path = DEFAULT_DOWNLOAD_DIR) -> Path:
         raise DownloadError(f"no downloadable video found at {url}")
 
     path = Path(str(downloads[0]["filepath"]))
+    # yt-dlp reuses an already-downloaded file without touching it. Mark it as just used,
+    # so cleanup (which deletes by age) doesn't remove a video a job is working on.
+    path.touch()
     logger.info("downloaded -> %s", path)
     return path

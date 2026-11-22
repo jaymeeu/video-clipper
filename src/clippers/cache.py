@@ -30,14 +30,20 @@ def cache_path(kind: str, *identity: str) -> Path:
 
 
 def load[M: BaseModel](path: Path, model: type[M]) -> M | None:
-    """The cached value at `path`, or None if it's missing or unreadable."""
+    """The cached value at `path`, or None if it's missing or unreadable.
+
+    A hit refreshes the file's modification time, so cleanup (which removes entries by
+    age) treats it as "recently used" rather than "created long ago".
+    """
     if not path.is_file():
         return None
     try:
-        return model.model_validate_json(path.read_bytes())
+        value = model.model_validate_json(path.read_bytes())
     except ValidationError:
         logger.warning("ignoring unreadable cache file %s", path)
         return None
+    path.touch()
+    return value
 
 
 def save(path: Path, value: BaseModel) -> None:

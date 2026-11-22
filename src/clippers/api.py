@@ -107,7 +107,10 @@ def create_app(
         async def enqueue_job(job_id: str) -> None:
             await pool.enqueue_job("process_job", job_id, _job_id=job_id)
 
-        app.state.store, app.state.enqueue = RedisJobStore(pool), enqueue_job
+        app.state.store, app.state.enqueue = (
+            RedisJobStore(pool, settings.retention_seconds),
+            enqueue_job,
+        )
         if settings.api_key is None:
             logger.warning("CLIPPERS_API_KEY is not set: the API accepts unauthenticated requests")
         try:

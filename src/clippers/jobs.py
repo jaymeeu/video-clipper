@@ -37,6 +37,8 @@ class ServiceSettings:
     redis_url: str
     data_dir: Path  # job outputs and downloads live here
     api_key: str | None  # when set, clients must send it as X-API-Key
+    # How long finished jobs (records and clips), downloads and caches are kept.
+    retention_days: float = 7.0
 
     @classmethod
     def from_env(cls) -> "ServiceSettings":
@@ -44,10 +46,15 @@ class ServiceSettings:
             redis_url=os.environ.get("CLIPPERS_REDIS_URL", "redis://localhost:6379"),
             data_dir=Path(os.environ.get("CLIPPERS_DATA_DIR", "data")),
             api_key=os.environ.get("CLIPPERS_API_KEY") or None,
+            retention_days=float(os.environ.get("CLIPPERS_RETENTION_DAYS", "7")),
         )
 
     def job_dir(self, job_id: str) -> Path:
         return self.data_dir / "jobs" / job_id
+
+    @property
+    def retention_seconds(self) -> int:
+        return int(self.retention_days * 24 * 3600)
 
 
 class JobRequest(BaseModel):
@@ -119,12 +126,13 @@ class JobStore(Protocol):
 
 
 class RedisJobStore:
-    """Job records as JSON strings in Redis, kept for a week."""
+    """Job records as JSON strings in Redis. Each save resets the record's expiry, so a
+    record lives `ttl_seconds` after the job's last update; cleanup.py then removes the
+    job's files once the record is gone."""
 
-    _TTL_SECONDS = 7 * 24 * 3600
-
-    def __init__(self, redis: Redis) -> None:
+    def __init__(self, redis: Redis, ttl_seconds: int) -> None:
         self._redis = redis
+        self._ttl_seconds = ttl_seconds
 
     @staticmethod
     def _key(job_id: str) -> str:
@@ -135,7 +143,7 @@ class RedisJobStore:
         return JobRecord.model_validate_json(raw) if raw is not None else None
 
     async def save(self, record: JobRecord) -> None:
-        await self._redis.set(self._key(record.id), record.model_dump_json(), ex=self._TTL_SECONDS)
+        await self._redis.set(self._key(record.id), record.model_dump_json(), ex=self._ttl_seconds)
 
 
 async def run_job(job_id: str, store: JobStore, settings: ServiceSettings) -> JobRecord:
