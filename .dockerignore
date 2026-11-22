@@ -1,0 +1,24 @@
+# Keep the build context small and secrets out of images.
+# Secrets: never bake these into an image (anyone with the image could read them).
+# Pass them at runtime instead (compose `env_file`, or your host's secret settings).
+.env
+.env.*
+!.env.example
+
+# Local environments, caches and media
+.venv/
+**/__pycache__/
+.pytest_cache/
+.ruff_cache/
+data/
+downloads/
+output/
+*.mp4
+*.mov
+*.mkv
+*.wav
+
+# Not needed at runtime
+.git/
+tests/
+.DS_Store

@@ -1,4 +1,8 @@
-# Local infrastructure for the clippers API. Start with: docker compose up -d
+# The whole clippers service: Redis + API + worker.
+#   docker compose up -d --build        start everything (API on http://127.0.0.1:8000)
+#   docker compose up -d redis          just Redis, to run the API/worker with uv locally
+#   docker compose logs -f worker       watch jobs being processed
+#   docker compose up -d --scale worker=3   more videos in parallel (if the machine has cores)
 services:
   redis:
     image: redis:7.4-alpine
@@ -6,8 +10,41 @@ services:
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
-      - redis-data:/data  # queued jobs survive a container restart
+      - redis-data:/data  # queued jobs and job records survive a restart
+    restart: unless-stopped
+
+  api:
+    build: .
+    image: clippers:local
+    ports:
+      - "127.0.0.1:8000:8000"  # put a reverse proxy (HTTPS) in front on a real server
+    environment: &app-env
+      CLIPPERS_REDIS_URL: redis://redis:6379  # the service name, not localhost
+    env_file:  # OPENAI_API_KEY, CLIPPERS_API_KEY, ... read at runtime, never baked in
+      - path: .env
+        required: false
+    volumes:
+      - data:/data  # shared with the worker: it writes clips, the API serves them
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  worker:
+    image: clippers:local  # same image as the API, different command
+    command: ["arq", "clippers.worker.WorkerSettings"]
+    environment: *app-env
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - data:/data
+    depends_on:
+      - redis
+      - api  # so `up --build` builds the image (via api) before starting the worker
+    healthcheck:
+      disable: true  # the image's healthcheck is for the API
     restart: unless-stopped
 
 volumes:
   redis-data:
+  data:
