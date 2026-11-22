@@ -13,13 +13,37 @@ OUTPUT_HEIGHT = 1920
 # blur anyway, and blurring 16x fewer pixels is much faster on CPU.
 _BG_DOWNSCALE = 4
 
+# In blur mode, the sharp centre video is at least this share of the frame's height.
+# A 16:9 source fitted to the width is only ~32% tall, which looks small on a phone; at
+# 0.6 it's zoomed in and its sides are trimmed (you see the middle ~53% of the width).
+FOREGROUND_HEIGHT = 0.6
+
 
 class Framing(StrEnum):
     """How to fit the source into the output frame."""
 
     ORIGINAL = "original"  # keep the source size and aspect ratio
     CROP = "crop"  # fill 9:16 and centre-crop the overflow (cuts the sides of landscape video)
-    BLUR = "blur"  # fit the whole frame, fill the bars with a blurred, zoomed copy of itself
+    BLUR = "blur"  # sharp centre video (>= 3/5 of the height) over a blurred copy of itself
+
+
+def foreground_chain(
+    width: int = OUTPUT_WIDTH,
+    height: int = OUTPUT_HEIGHT,
+    min_height_ratio: float = FOREGROUND_HEIGHT,
+) -> str:
+    """The sharp centre video of blur mode, as an ffmpeg filter chain.
+
+    Its height is the larger of (a) `min_height_ratio` of the frame and (b) the height it
+    has when fitted to the frame. So landscape and square sources are zoomed in and
+    centre-cropped to the frame width, while vertical sources stay whole (they're
+    already taller than the minimum). Heights are kept even, as H.264 requires.
+    """
+    min_h = round(height * min_height_ratio / 2) * 2
+    fitted_h = f"trunc(min({height}\\,{width}*ih/iw)/2)*2"  # height when fitted, even
+    # `\\,` in this source = `\,` in the string: an escaped comma inside an ffmpeg
+    # expression (a bare comma would end the filter).
+    return f"scale=w=-2:h=max({min_h}\\,{fitted_h}),crop=w=min(iw\\,{width}):h=ih"
 
 
 def framing_filter(
@@ -43,8 +67,7 @@ def framing_filter(
                 "split=2[bg][fg];"
                 f"[bg]scale={bg_w}:{bg_h}:force_original_aspect_ratio=increase,"
                 f"crop={bg_w}:{bg_h},boxblur=10:2,scale={width}:{height}[bg];"
-                f"[fg]scale={width}:{height}:force_original_aspect_ratio=decrease"
-                ":force_divisible_by=2[fg];"
+                f"[fg]{foreground_chain(width, height)}[fg];"
                 "[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1"
             )
         case _:

@@ -1,8 +1,15 @@
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from clippers.framing import OUTPUT_HEIGHT, OUTPUT_WIDTH, Framing, framing_filter
+from clippers.framing import (
+    OUTPUT_HEIGHT,
+    OUTPUT_WIDTH,
+    Framing,
+    foreground_chain,
+    framing_filter,
+)
 from clippers.video import cut_clip
 from tests.media import MakeVideo, probe_size, requires_ffmpeg
 
@@ -42,3 +49,28 @@ def test_original_framing_keeps_source_size(make_video: MakeVideo, tmp_path: Pat
     cut_clip(source, out, start=0.0, duration=0.5, framing=Framing.ORIGINAL)
 
     assert probe_size(out) == (1280, 720)
+
+
+@requires_ffmpeg
+@pytest.mark.parametrize(
+    ("src_w", "src_h", "expected"),
+    [
+        (1920, 1080, (1080, 1152)),  # 16:9: zoomed to 3/5 of the height, sides trimmed
+        (1366, 768, (1080, 1152)),
+        (1080, 1080, (1080, 1152)),  # square
+        (320, 240, (1080, 1152)),  # 4:3
+        (720, 1280, (1080, 1920)),  # 9:16 phone stream: already taller, stays whole
+        (1080, 2400, (864, 1920)),  # extra-tall: fitted to the height, nothing cut
+    ],
+)
+def test_blur_foreground_fills_at_least_three_fifths_of_the_height(
+    make_video: MakeVideo, tmp_path: Path, src_w: int, src_h: int, expected: tuple[int, int]
+) -> None:
+    source = make_video(src_w, src_h, seconds=1.0)
+    out = tmp_path / "fg.mp4"
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(source),
+           "-t", "0.2", "-vf", foreground_chain(), str(out)]  # fmt: skip
+
+    subprocess.run(cmd, check=True, capture_output=True)
+
+    assert probe_size(out) == expected
