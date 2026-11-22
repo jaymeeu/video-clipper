@@ -17,6 +17,10 @@ class InMemoryJobStore:
         self.records[record.id] = record
         self.history.append(record)
 
+    async def recent(self, limit: int) -> list[JobRecord]:
+        newest_first = sorted(self.records.values(), key=lambda r: r.created_at, reverse=True)
+        return newest_first[:limit]
+
 
 class RecordingQueue:
     """An `Enqueue` callable that just records the job ids it was given."""

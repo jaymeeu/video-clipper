@@ -1,10 +1,12 @@
 import asyncio
 import logging
 import re
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
+from fakeredis import FakeAsyncRedis
 from pydantic import ValidationError
 
 from clippers import autoclip, netguard
@@ -12,7 +14,7 @@ from clippers.autoclip import AutoOptions, AutoResult
 from clippers.batch import ClipOutcome
 from clippers.framing import Framing
 from clippers.ingest import DownloadError
-from clippers.jobs import JobRecord, JobRequest, ServiceSettings, now, run_job
+from clippers.jobs import JobRecord, JobRequest, RedisJobStore, ServiceSettings, now, run_job
 from clippers.logs import configure_logging
 from clippers.moments import Moment, MomentsFile
 from tests.fakes import InMemoryJobStore
@@ -195,3 +197,63 @@ def test_worker_logging_shows_our_progress_with_timestamps(
     err = capsys.readouterr().err
     assert re.search(r"^\d\d:\d\d:\d\d INFO clippers.transcribe: transcribing", err, re.M)
     assert "library chatter" not in err
+
+
+class TestRedisJobStore:
+    """The real RedisJobStore code against fakeredis (Redis's behaviour, in memory)."""
+
+    @staticmethod
+    def make(ttl: int = 3600) -> RedisJobStore:
+        return RedisJobStore(FakeAsyncRedis(), ttl_seconds=ttl)
+
+    @staticmethod
+    def job(job_id: str, minutes_ago: float) -> JobRecord:
+        t = now() - timedelta(minutes=minutes_ago)
+        return JobRecord(
+            id=job_id, state="queued", request=JobRequest(url=URL), created_at=t, updated_at=t
+        )
+
+    def test_recent_is_newest_first_and_limited(self) -> None:
+        async def scenario() -> list[str]:
+            store = self.make()
+            for job_id, age in [("old", 30), ("newest", 1), ("middle", 10)]:
+                await store.save(self.job(job_id, age))
+            return [r.id for r in await store.recent(limit=2)]
+
+        assert asyncio.run(scenario()) == ["newest", "middle"]
+
+    def test_updates_keep_the_original_position(self) -> None:
+        async def scenario() -> list[str]:
+            store = self.make()
+            await store.save(self.job("a", 20))
+            await store.save(self.job("b", 10))
+            first = await store.get("a")
+            assert first is not None
+            await store.save(first.updated(state="done"))  # a later update of the older job
+            return [r.id for r in await store.recent(limit=10)]
+
+        assert asyncio.run(scenario()) == ["b", "a"]
+
+    def test_expired_records_drop_out_of_the_list(self) -> None:
+        async def scenario() -> tuple[list[str], int]:
+            redis = FakeAsyncRedis()
+            store = RedisJobStore(redis, ttl_seconds=3600)
+            await store.save(self.job("kept", 1))
+            await store.save(self.job("gone", 2))
+            await redis.delete("clippers:job:gone")  # as if its TTL ran out
+            ids = [r.id for r in await store.recent(limit=10)]
+            return ids, await redis.zcard("clippers:jobs")
+
+        ids, index_size = asyncio.run(scenario())
+        assert ids == ["kept"]
+        assert index_size == 1  # the stale id was removed from the index too
+
+    def test_index_is_trimmed_by_age(self) -> None:
+        async def scenario() -> int:
+            redis = FakeAsyncRedis()
+            store = RedisJobStore(redis, ttl_seconds=3600)  # one hour
+            await store.save(self.job("ancient", 120))  # created two hours ago
+            await store.save(self.job("fresh", 1))
+            return await redis.zcard("clippers:jobs")
+
+        assert asyncio.run(scenario()) == 1

@@ -123,6 +123,9 @@ def now() -> datetime:
 class JobStore(Protocol):
     async def get(self, job_id: str) -> JobRecord | None: ...
     async def save(self, record: JobRecord) -> None: ...
+    async def recent(self, limit: int) -> list[JobRecord]:
+        """The newest jobs first (expired ones are left out)."""
+        ...
 
 
 class RedisJobStore:
@@ -134,6 +137,11 @@ class RedisJobStore:
         self._redis = redis
         self._ttl_seconds = ttl_seconds
 
+    # A sorted set of job ids scored by creation time: Redis's way to keep an ordered
+    # index (≈ an index on created_at). Records expire on their own; the index is trimmed
+    # by age on every save and cleaned of expired ids whenever it's read.
+    _INDEX = "clippers:jobs"
+
     @staticmethod
     def _key(job_id: str) -> str:
         return f"clippers:job:{job_id}"
@@ -143,7 +151,23 @@ class RedisJobStore:
         return JobRecord.model_validate_json(raw) if raw is not None else None
 
     async def save(self, record: JobRecord) -> None:
+        created = record.created_at.timestamp()
         await self._redis.set(self._key(record.id), record.model_dump_json(), ex=self._ttl_seconds)
+        await self._redis.zadd(self._INDEX, {record.id: created}, nx=True)  # nx: keep first
+        await self._redis.zremrangebyscore(
+            self._INDEX, "-inf", now().timestamp() - self._ttl_seconds
+        )
+
+    async def recent(self, limit: int) -> list[JobRecord]:
+        # redis-py's annotation for zrevrange has an untyped callable parameter.
+        ids: list[bytes] = await self._redis.zrevrange(self._INDEX, 0, limit - 1)  # pyright: ignore[reportUnknownMemberType]
+        if not ids:
+            return []
+        raws: list[bytes | None] = await self._redis.mget([self._key(i.decode()) for i in ids])
+        expired = [i for i, raw in zip(ids, raws, strict=True) if raw is None]
+        if expired:
+            await self._redis.zrem(self._INDEX, *expired)
+        return [JobRecord.model_validate_json(raw) for raw in raws if raw is not None]
 
 
 async def run_job(job_id: str, store: JobStore, settings: ServiceSettings) -> JobRecord:

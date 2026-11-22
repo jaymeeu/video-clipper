@@ -11,12 +11,13 @@ import secrets
 import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Annotated
 
 from arq import create_pool
 from arq.connections import RedisSettings
 from dotenv import find_dotenv, load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -49,8 +50,11 @@ class JobView(BaseModel):
     state: JobState
     stage: str | None
     error: str | None
+    request: JobRequest  # what was asked for: the video URL and options
     clips: list[ClipView]
     failed_clips: int
+    created_at: datetime
+    updated_at: datetime
 
 
 # Dependencies: FastAPI calls these per request and passes the results into handlers
@@ -80,8 +84,11 @@ def _view(record: JobRecord, request: Request) -> JobView:
         state=record.state,
         stage=record.stage,
         error=record.error,
+        request=record.request,
         clips=clips,
         failed_clips=record.failed_clips,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
     )
 
 
@@ -164,6 +171,13 @@ def create_app(
         await enqueue(record.id)
         response.headers["Location"] = str(request.url_for("get_job", job_id=record.id))
         return _view(record, request)
+
+    @app.get("/jobs")
+    async def list_jobs(
+        request: Request, store: StoreDep, limit: Annotated[int, Query(ge=1, le=200)] = 50
+    ) -> list[JobView]:
+        """Recent jobs, newest first (jobs disappear after the retention period)."""
+        return [_view(record, request) for record in await store.recent(limit)]
 
     async def _load(store: JobStore, job_id: str) -> JobRecord:
         record = await store.get(job_id)

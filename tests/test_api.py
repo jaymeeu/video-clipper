@@ -1,5 +1,7 @@
 import asyncio
+import json
 from collections.abc import Iterator
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -8,6 +10,7 @@ from fastapi.testclient import TestClient
 from clippers import netguard
 from clippers.api import create_app
 from clippers.jobs import ClipInfo, JobRecord, JobRequest, ServiceSettings, now
+from clippers.openapi import schema
 from tests.fakes import InMemoryJobStore, RecordingQueue
 
 URL = "https://example.com/stream.mp4"
@@ -164,3 +167,42 @@ def test_private_network_urls_are_refused_before_queueing(
     assert response.status_code == 422
     assert "private or reserved" in response.json()["detail"]
     assert queue.job_ids == []
+
+
+class TestListJobs:
+    def test_newest_first_with_request_details(
+        self, client: TestClient, store: InMemoryJobStore
+    ) -> None:
+        for job_id, minutes_ago in [("older", 30), ("newer", 5)]:
+            t = now() - timedelta(minutes=minutes_ago)
+            asyncio.run(
+                store.save(
+                    JobRecord(
+                        id=job_id,
+                        state="queued",
+                        request=JobRequest(url=f"https://example.com/{job_id}.mp4", count=3),
+                        created_at=t,
+                        updated_at=t,
+                    )
+                )
+            )
+
+        jobs = client.get("/jobs").json()
+
+        assert [j["id"] for j in jobs] == ["newer", "older"]
+        assert jobs[0]["request"]["url"] == "https://example.com/newer.mp4"
+        assert jobs[0]["request"]["count"] == 3
+        assert "created_at" in jobs[0]
+
+    def test_limit_is_validated(self, client: TestClient) -> None:
+        assert client.get("/jobs?limit=0").status_code == 422
+        assert client.get("/jobs?limit=2").json() == []
+
+
+def test_committed_openapi_schema_matches_the_api() -> None:
+    # The web app's TypeScript types are generated from web/openapi.json. If the API
+    # changes without regenerating it, this fails: run `npm run gen:api` in web/.
+    committed = Path(__file__).parent.parent / "web" / "openapi.json"
+    if not committed.exists():
+        pytest.skip("web/openapi.json not generated yet")
+    assert json.loads(committed.read_text()) == schema()
